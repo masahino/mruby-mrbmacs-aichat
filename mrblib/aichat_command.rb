@@ -288,10 +288,12 @@ module Mrbmacs
       preserve_input = response['preserve_input'] == true
       replacement = "\nAssistant: #{response['text']}"
       replacement += "\n\nYou: " unless preserve_input
+      answer_start = nil
       if waiting_text == AichatExtension::WAITING_TEXT
         view.sci_set_target_start(waiting_start)
         view.sci_set_target_end(waiting_end)
         view.sci_replace_target(replacement.bytesize, replacement)
+        answer_start = waiting_start + "\nAssistant: ".bytesize
         if preserve_input
           difference = replacement.bytesize - (waiting_end - waiting_start)
           @ext.data['aichat']['input_start'] += difference
@@ -301,14 +303,18 @@ module Mrbmacs
         insert_position = input_start - 'You: '.bytesize
         fallback = "Assistant: #{response['text']}\n\n"
         view.sci_insert_text(insert_position, fallback)
+        answer_start = insert_position + 'Assistant: '.bytesize
         @ext.data['aichat']['input_start'] = input_start + fallback.bytesize
       else
-        view.sci_insert_text(view.sci_get_length, replacement)
+        insert_position = view.sci_get_length
+        view.sci_insert_text(insert_position, replacement)
+        answer_start = insert_position + "\nAssistant: ".bytesize
       end
-      view.sci_goto_pos(view.sci_get_length)
       unless preserve_input
-        @ext.data['aichat']['input_start'] = view.sci_get_current_pos
+        @ext.data['aichat']['input_start'] = view.sci_get_length
       end
+      view.sci_goto_pos(answer_start)
+      view.sci_scroll_caret
     end
   end
 end

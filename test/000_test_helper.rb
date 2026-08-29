@@ -2,7 +2,7 @@ module Mrbmacs
   module AichatTestSupport
     class View
       attr_accessor :text, :current_line, :position, :selection_start, :selection_end
-      attr_reader :lexer_language
+      attr_reader :lexer_language, :scroll_caret_calls
 
       def initialize
         @text = ''
@@ -10,6 +10,7 @@ module Mrbmacs
         @position = 0
         @selection_start = 0
         @selection_end = 0
+        @scroll_caret_calls = 0
       end
 
       def sci_insert_text(position, value)
@@ -26,6 +27,10 @@ module Mrbmacs
 
       def sci_goto_pos(position)
         @position = position
+      end
+
+      def sci_scroll_caret
+        @scroll_caret_calls += 1
       end
 
       def sci_get_current_pos

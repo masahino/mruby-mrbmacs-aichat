@@ -168,8 +168,10 @@ assert('aichat_send sends only the current multiline prompt and appends the answ
   assert_true request_arguments.include?('@-')
   assert_equal "You: old\nAssistant: old answer\n\nYou: first line\nsecond line\nAssistant: new answer\n\nYou: ",
                app.frame.view_win.text
-  assert_equal app.frame.view_win.text.bytesize, app.frame.view_win.position
-  assert_equal app.frame.view_win.position, app.ext.data['aichat']['input_start']
+  assert_equal app.frame.view_win.text.index('new answer'), app.frame.view_win.position
+  assert_equal app.frame.view_win.text.bytesize, app.ext.data['aichat']['input_start']
+  assert_false app.frame.view_win.position == app.ext.data['aichat']['input_start']
+  assert_equal 1, app.frame.view_win.scroll_caret_calls
   assert_equal [
     { 'role' => 'user', 'content' => "first line\nsecond line" },
     { 'role' => 'assistant', 'content' => 'new answer' }
@@ -221,6 +223,8 @@ assert('aichat_send reports curl, API, and JSON errors without exposing the key'
     response_body = runner_result[0]
     assert_false app.logger.messages.join.include?(response_body) unless response_body.empty?
     assert_equal [], app.ext.data['aichat']['conversation']
+    assert_equal app.frame.view_win.text.index(expected), app.frame.view_win.position
+    assert_equal 1, app.frame.view_win.scroll_caret_calls
   end
 ensure
   ENV['OPENAI_API_KEY'] = old_key
@@ -244,6 +248,9 @@ assert('aichat_send shows waiting text and prevents a second request') do
   assert_equal ['AI Chat request is already running'], app.messages
   completion.call(aichat_success_response('answer'), '', 0)
   assert_true app.frame.view_win.text.end_with?("Assistant: answer\n\nYou: ")
+  assert_equal app.frame.view_win.text.index('answer'), app.frame.view_win.position
+  assert_equal app.frame.view_win.text.bytesize, app.ext.data['aichat']['input_start']
+  assert_equal 1, app.frame.view_win.scroll_caret_calls
 ensure
   ENV['OPENAI_API_KEY'] = old_key
 end
@@ -264,6 +271,9 @@ assert('aichat completion appends when waiting text was edited') do
 
   assert_true app.frame.view_win.text.include?('Assistant: Changed for response...')
   assert_true app.frame.view_win.text.end_with?("Assistant: answer\n\nYou: ")
+  assert_equal app.frame.view_win.text.rindex('answer'), app.frame.view_win.position
+  assert_equal app.frame.view_win.text.bytesize, app.ext.data['aichat']['input_start']
+  assert_equal 1, app.frame.view_win.scroll_caret_calls
 ensure
   ENV['OPENAI_API_KEY'] = old_key
 end
@@ -285,6 +295,9 @@ assert('aichat completion is pending after switching windows') do
 
   app.aichat
   assert_true app.frame.view_win.text.end_with?("Assistant: answer\n\nYou: ")
+  assert_equal app.frame.view_win.text.index('answer'), app.frame.view_win.position
+  assert_equal app.frame.view_win.text.bytesize, app.ext.data['aichat']['input_start']
+  assert_equal 1, app.frame.view_win.scroll_caret_calls
 ensure
   ENV['OPENAI_API_KEY'] = old_key
 end
@@ -334,6 +347,9 @@ assert('aichat_ask sends the selected region and displays only the instruction')
 
   completion.call(aichat_success_response('answer'), '', 0)
   assert_equal "You: Explain this\nAssistant: answer\n\nYou: ", app.frame.view_win.text
+  assert_equal app.frame.view_win.text.index('answer'), app.frame.view_win.position
+  assert_equal app.frame.view_win.text.bytesize, app.ext.data['aichat']['input_start']
+  assert_equal 1, app.frame.view_win.scroll_caret_calls
   assert_equal [
     { 'role' => 'user', 'content' => 'Explain this' },
     { 'role' => 'assistant', 'content' => 'answer' }
@@ -395,6 +411,9 @@ assert('aichat_ask preserves an existing unsent draft') do
     draft_start,
     app.frame.view_win.sci_get_length
   )
+  assert_equal app.frame.view_win.text.index('answer'), app.frame.view_win.position
+  assert_false app.frame.view_win.position == draft_start
+  assert_equal 1, app.frame.view_win.scroll_caret_calls
 ensure
   ENV['OPENAI_API_KEY'] = old_key
 end
