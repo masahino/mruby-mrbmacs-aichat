@@ -46,14 +46,16 @@ module Mrbmacs
       source_view = @frame.view_win
       selection_start = source_view.sci_get_selection_start
       selection_end = source_view.sci_get_selection_end
-      source = if selection_start == selection_end
-                 source_view.sci_get_text(source_view.sci_get_length + 1)
-               else
+      region_selected = selection_start != selection_end
+      source = if region_selected
                  source_view.sci_get_text_range(selection_start, selection_end)
+               else
+                 source_view.sci_get_text(source_view.sci_get_length + 1)
                end
       source = source.dup
 
-      instruction = @frame.echo_gets('AI: ')
+      prompt = region_selected ? 'AI about region: ' : 'AI about whole buffer: '
+      instruction = @frame.echo_gets(prompt)
       return if instruction.nil? || instruction.strip.empty?
 
       api_prompt = "Instruction:\n#{instruction}\n\nSource:\n#{source}"
@@ -94,12 +96,16 @@ module Mrbmacs
       model = AichatExtension::DEFAULT_MODEL if model.nil? || model.empty?
       request_body = JSON.generate('model' => model, 'input' => prompt)
       arguments = [
+        '--disable',
         '--silent',
         '--show-error',
         '--fail-with-body',
+        '--connect-timeout', AichatExtension::CONNECT_TIMEOUT_SECONDS.to_s,
+        '--max-time', AichatExtension::REQUEST_TIMEOUT_SECONDS.to_s,
         '--request', 'POST',
         '--url', AichatExtension::RESPONSES_URL,
-        '--header', "Authorization: Bearer #{api_key}",
+        '--variable', '%OPENAI_API_KEY',
+        '--expand-header', 'Authorization: Bearer {{OPENAI_API_KEY}}',
         '--header', 'Content-Type: application/json',
         '--data-binary', '@-'
       ]
@@ -113,7 +119,7 @@ module Mrbmacs
     end
 
     def process_aichat_result(response_body, error_text, status, api_key)
-      log_aichat_failure(status, error_text, response_body, api_key) unless status == 0
+      log_aichat_failure(status, error_text, api_key) unless status == 0
       response = JSON.parse(response_body)
       if response['error'].is_a?(Hash)
         return [nil, redact_aichat_secret(response['error']['message'].to_s, api_key)]
@@ -125,7 +131,7 @@ module Mrbmacs
 
       [output, nil]
     rescue JSON::ParserError
-      log_aichat_parse_failure(response_body, api_key)
+      log_aichat_parse_failure
       [nil, status == 0 ? 'OpenAI returned invalid JSON.' : "curl exited with status #{status}"]
     rescue StandardError => e
       [nil, redact_aichat_secret(e.to_s, api_key)]
@@ -155,20 +161,15 @@ module Mrbmacs
       message_text.gsub(api_key, '[REDACTED]')
     end
 
-    def log_aichat_failure(status, error_text, response_body, api_key)
+    def log_aichat_failure(status, error_text, api_key)
       @logger.info "[aichat] curl exited with status #{status}"
       unless error_text.nil? || error_text.empty?
         @logger.info "[aichat] curl stderr: #{redact_aichat_secret(error_text, api_key)}"
       end
-      unless response_body.nil? || response_body.empty?
-        @logger.info "[aichat] response body: #{redact_aichat_secret(response_body, api_key)}"
-      end
     end
 
-    def log_aichat_parse_failure(response_body, api_key)
-      body = response_body.to_s
+    def log_aichat_parse_failure
       @logger.info '[aichat] failed to parse response JSON'
-      @logger.info "[aichat] response body: #{redact_aichat_secret(body, api_key)}" unless body.empty?
     end
 
     def append_aichat_waiting

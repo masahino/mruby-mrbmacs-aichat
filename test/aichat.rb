@@ -153,7 +153,13 @@ assert('aichat_send sends only the current multiline prompt and appends the answ
   request = JSON.parse(request_body)
   assert_equal "first line\nsecond line", request['input']
   assert_equal 'test-model', request['model']
-  assert_true request_arguments.include?('Authorization: Bearer test-secret')
+  assert_equal '--disable', request_arguments[0]
+  assert_true request_arguments.include?('%OPENAI_API_KEY')
+  assert_true request_arguments.include?('Authorization: Bearer {{OPENAI_API_KEY}}')
+  assert_false request_arguments.join.include?('test-secret')
+  assert_true request_arguments.include?('--connect-timeout')
+  assert_true request_arguments.include?('--max-time')
+  assert_true request_arguments.include?('@-')
   assert_equal "You: old\nAssistant: old answer\n\nYou: first line\nsecond line\nAssistant: new answer\n\nYou: ",
                app.frame.view_win.text
   assert_equal app.frame.view_win.text.bytesize, app.frame.view_win.position
@@ -202,6 +208,8 @@ assert('aichat_send reports curl, API, and JSON errors without exposing the key'
     assert_true app.frame.view_win.text.include?(expected)
     assert_false app.frame.view_win.text.include?('test-secret')
     assert_false app.logger.messages.join.include?('test-secret')
+    response_body = runner_result[0]
+    assert_false app.logger.messages.join.include?(response_body) unless response_body.empty?
   end
 ensure
   ENV['OPENAI_API_KEY'] = old_key
@@ -302,6 +310,7 @@ assert('aichat_ask sends the selected region and displays only the instruction')
 
   app.aichat_ask
 
+  assert_equal ['AI about region: '], app.frame.echo_prompts
   request = JSON.parse(request_body)
   assert_equal "Instruction:\nExplain this\n\nSource:\nselected", request['input']
   assert_equal "You: Explain this\nAssistant: Waiting for response...", app.frame.view_win.text
@@ -328,6 +337,7 @@ assert('aichat_ask sends the whole buffer when there is no region') do
 
   app.aichat_ask
 
+  assert_equal ['AI about whole buffer: '], app.frame.echo_prompts
   request = JSON.parse(request_body)
   assert_equal "Instruction:\nReview\n\nSource:\nfirst\nsecond", request['input']
   assert_false app.frame.view_win.text.include?('first')

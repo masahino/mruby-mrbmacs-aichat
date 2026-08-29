@@ -76,20 +76,22 @@ module Mrbmacs
     end
 
     class Frame
-      attr_reader :view_win
+      attr_reader :view_win, :echo_prompts
       attr_accessor :edit_win
 
       def initialize
         @view_win = View.new
         @edit_win = Object.new
         @echo_inputs = []
+        @echo_prompts = []
       end
 
       def queue_echo_input(input)
         @echo_inputs << input
       end
 
-      def echo_gets(_prompt, _text = '')
+      def echo_gets(prompt, _text = '')
+        @echo_prompts << prompt
         @echo_inputs.shift
       end
     end
