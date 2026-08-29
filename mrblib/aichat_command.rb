@@ -9,10 +9,7 @@ module Mrbmacs
         return
       end
 
-      @frame.view_win.sci_insert_text(0, 'You: ')
-      @frame.view_win.sci_goto_pos(@frame.view_win.sci_get_length)
-      @ext.data['aichat']['input_start'] = @frame.view_win.sci_get_current_pos
-      @current_buffer.docpointer = @frame.view_win.sci_get_docpointer
+      reset_aichat_buffer
     end
 
     def aichat_send
@@ -34,7 +31,7 @@ module Mrbmacs
       prompt = view.sci_get_text_range(input_start, current_pos)
       return if prompt.strip.empty?
 
-      start_aichat_request(prompt)
+      start_aichat_request(prompt, prompt)
     end
 
     def aichat_ask
@@ -58,22 +55,44 @@ module Mrbmacs
       instruction = @frame.echo_gets(prompt)
       return if instruction.nil? || instruction.strip.empty?
 
-      api_prompt = "Instruction:\n#{instruction}\n\nSource:\n#{source}"
+      api_prompt = "User instruction:\n#{instruction}\n\n" \
+                   "Editor context for this request:\n#{source}"
       aichat
       waiting_start, waiting_end, preserve_input = append_aichat_ask(instruction)
-      start_aichat_request(api_prompt, waiting_start, waiting_end, preserve_input)
+      start_aichat_request(
+        api_prompt,
+        instruction,
+        waiting_start,
+        waiting_end,
+        preserve_input
+      )
+    end
+
+    def aichat_clear
+      state = @ext.data['aichat']
+      if state['request_running']
+        message 'AI Chat request is already running'
+        return
+      end
+
+      state['conversation'] = []
+      state['pending_response'] = nil
+      setup_result_buffer(AichatExtension::AICHAT_BUFFER_NAME)
+      reset_aichat_buffer
     end
 
     private
 
-    def start_aichat_request(prompt, waiting_start = nil, waiting_end = nil, preserve_input = false)
+    def start_aichat_request(api_prompt, conversation_prompt, waiting_start = nil,
+                             waiting_end = nil, preserve_input = false)
       target_buffer = @current_buffer
       target_window = @frame.edit_win
       if waiting_start.nil? || waiting_end.nil?
         waiting_start, waiting_end = append_aichat_waiting
       end
       @ext.data['aichat']['request_running'] = true
-      request_aichat(prompt) do |answer, error|
+      request_aichat(api_prompt) do |answer, error|
+        append_aichat_conversation_turn(conversation_prompt, answer) unless answer.nil?
         finish_aichat_request(
           target_buffer,
           target_window,
@@ -94,7 +113,7 @@ module Mrbmacs
 
       model = ENV['MRBMACS_AICHAT_MODEL']
       model = AichatExtension::DEFAULT_MODEL if model.nil? || model.empty?
-      request_body = JSON.generate('model' => model, 'input' => prompt)
+      request_body = JSON.generate('model' => model, 'input' => build_aichat_input(prompt))
       arguments = [
         '--disable',
         '--silent',
@@ -170,6 +189,38 @@ module Mrbmacs
 
     def log_aichat_parse_failure
       @logger.info '[aichat] failed to parse response JSON'
+    end
+
+    def build_aichat_input(prompt)
+      input = []
+      @ext.data['aichat']['conversation'].each do |message|
+        input << {
+          'role' => message['role'].to_s,
+          'content' => message['content'].to_s
+        }
+      end
+      input << { 'role' => 'user', 'content' => prompt }
+      input
+    end
+
+    def append_aichat_conversation_turn(user_text, assistant_text)
+      conversation = @ext.data['aichat']['conversation']
+      conversation << { 'role' => 'user', 'content' => user_text.dup }
+      conversation << { 'role' => 'assistant', 'content' => assistant_text.dup }
+
+      message_limit = AichatExtension::CONVERSATION_TURN_LIMIT * 2
+      while conversation.length > message_limit
+        conversation.shift
+        conversation.shift
+      end
+    end
+
+    def reset_aichat_buffer
+      view = @frame.view_win
+      view.sci_set_text('You: ')
+      view.sci_goto_pos(view.sci_get_length)
+      @ext.data['aichat']['input_start'] = view.sci_get_current_pos
+      @current_buffer.docpointer = view.sci_get_docpointer
     end
 
     def append_aichat_waiting

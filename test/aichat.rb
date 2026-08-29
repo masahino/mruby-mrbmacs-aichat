@@ -46,6 +46,10 @@ assert('aichat_ask is available as an extended command') do
   assert_true Mrbmacs::Command.instance_methods.include?(:aichat_ask)
 end
 
+assert('aichat_clear is available as an extended command') do
+  assert_true Mrbmacs::Command.instance_methods.include?(:aichat_clear)
+end
+
 assert('AichatExtension registers *AI Chat* mode') do
   Mrbmacs::AichatTestSupport::App.new
 
@@ -151,7 +155,9 @@ assert('aichat_send sends only the current multiline prompt and appends the answ
   app.aichat_send
 
   request = JSON.parse(request_body)
-  assert_equal "first line\nsecond line", request['input']
+  assert_equal 1, request['input'].length
+  assert_equal 'user', request['input'][0]['role']
+  assert_equal "first line\nsecond line", request['input'][0]['content']
   assert_equal 'test-model', request['model']
   assert_equal '--disable', request_arguments[0]
   assert_true request_arguments.include?('%OPENAI_API_KEY')
@@ -164,6 +170,10 @@ assert('aichat_send sends only the current multiline prompt and appends the answ
                app.frame.view_win.text
   assert_equal app.frame.view_win.text.bytesize, app.frame.view_win.position
   assert_equal app.frame.view_win.position, app.ext.data['aichat']['input_start']
+  assert_equal [
+    { 'role' => 'user', 'content' => "first line\nsecond line" },
+    { 'role' => 'assistant', 'content' => 'new answer' }
+  ], app.ext.data['aichat']['conversation']
 ensure
   ENV['OPENAI_API_KEY'] = old_key
   ENV['MRBMACS_AICHAT_MODEL'] = old_model
@@ -210,6 +220,7 @@ assert('aichat_send reports curl, API, and JSON errors without exposing the key'
     assert_false app.logger.messages.join.include?('test-secret')
     response_body = runner_result[0]
     assert_false app.logger.messages.join.include?(response_body) unless response_body.empty?
+    assert_equal [], app.ext.data['aichat']['conversation']
   end
 ensure
   ENV['OPENAI_API_KEY'] = old_key
@@ -312,13 +323,22 @@ assert('aichat_ask sends the selected region and displays only the instruction')
 
   assert_equal ['AI about region: '], app.frame.echo_prompts
   request = JSON.parse(request_body)
-  assert_equal "Instruction:\nExplain this\n\nSource:\nselected", request['input']
+  assert_equal 1, request['input'].length
+  assert_equal 'user', request['input'][0]['role']
+  assert_equal "User instruction:\nExplain this\n\n" \
+               "Editor context for this request:\nselected",
+               request['input'][0]['content']
   assert_equal "You: Explain this\nAssistant: Waiting for response...", app.frame.view_win.text
   assert_false app.frame.view_win.text.include?('selected')
   assert_equal 'before selected after', app.buffer_text(source_buffer.name)
 
   completion.call(aichat_success_response('answer'), '', 0)
   assert_equal "You: Explain this\nAssistant: answer\n\nYou: ", app.frame.view_win.text
+  assert_equal [
+    { 'role' => 'user', 'content' => 'Explain this' },
+    { 'role' => 'assistant', 'content' => 'answer' }
+  ], app.ext.data['aichat']['conversation']
+  assert_false app.ext.data['aichat']['conversation'].to_s.include?('selected')
 ensure
   ENV['OPENAI_API_KEY'] = old_key
 end
@@ -339,7 +359,9 @@ assert('aichat_ask sends the whole buffer when there is no region') do
 
   assert_equal ['AI about whole buffer: '], app.frame.echo_prompts
   request = JSON.parse(request_body)
-  assert_equal "Instruction:\nReview\n\nSource:\nfirst\nsecond", request['input']
+  assert_equal "User instruction:\nReview\n\n" \
+               "Editor context for this request:\nfirst\nsecond",
+               request['input'][0]['content']
   assert_false app.frame.view_win.text.include?('first')
 ensure
   ENV['OPENAI_API_KEY'] = old_key
@@ -373,6 +395,159 @@ assert('aichat_ask preserves an existing unsent draft') do
     draft_start,
     app.frame.view_win.sci_get_length
   )
+ensure
+  ENV['OPENAI_API_KEY'] = old_key
+end
+
+assert('aichat sends previous successful turns with the next prompt') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  app.use_aichat_buffer('You: first question', 'You: first question')
+  old_key = ENV['OPENAI_API_KEY']
+  ENV['OPENAI_API_KEY'] = 'test-secret'
+  request_bodies = []
+  app.ext.data['aichat']['runner'] = lambda do |_arguments, body, &completion|
+    request_bodies << JSON.parse(body)
+    answer = request_bodies.length == 1 ? 'first answer' : 'second answer'
+    completion.call(aichat_success_response(answer), '', 0)
+  end
+
+  app.aichat_send
+  app.frame.view_win.sci_insert_text(app.frame.view_win.sci_get_length, 'second question')
+  app.frame.view_win.sci_goto_pos(app.frame.view_win.sci_get_length)
+  app.aichat_send
+
+  assert_equal [
+    { 'role' => 'user', 'content' => 'first question' }
+  ], request_bodies[0]['input']
+  assert_equal [
+    { 'role' => 'user', 'content' => 'first question' },
+    { 'role' => 'assistant', 'content' => 'first answer' },
+    { 'role' => 'user', 'content' => 'second question' }
+  ], request_bodies[1]['input']
+  assert_equal 4, app.ext.data['aichat']['conversation'].length
+ensure
+  ENV['OPENAI_API_KEY'] = old_key
+end
+
+assert('aichat keeps at most ten complete conversation turns') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  conversation = app.ext.data['aichat']['conversation']
+  10.times do |index|
+    conversation << { 'role' => 'user', 'content' => "user #{index}" }
+    conversation << { 'role' => 'assistant', 'content' => "assistant #{index}" }
+  end
+  app.use_aichat_buffer('You: newest', 'You: newest')
+  old_key = ENV['OPENAI_API_KEY']
+  ENV['OPENAI_API_KEY'] = 'test-secret'
+  request = nil
+  app.ext.data['aichat']['runner'] = lambda do |_arguments, body, &completion|
+    request = JSON.parse(body)
+    completion.call(aichat_success_response('newest answer'), '', 0)
+  end
+
+  app.aichat_send
+
+  assert_equal 21, request['input'].length
+  assert_equal 20, conversation.length
+  assert_equal 'user 1', conversation[0]['content']
+  assert_equal 'assistant 1', conversation[1]['content']
+  assert_equal 'newest', conversation[-2]['content']
+  assert_equal 'newest answer', conversation[-1]['content']
+ensure
+  ENV['OPENAI_API_KEY'] = old_key
+end
+
+assert('aichat_ask reuses conversation without retaining old editor context') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  app.use_edit_buffer('first private source')
+  app.frame.queue_echo_input('First instruction')
+  old_key = ENV['OPENAI_API_KEY']
+  ENV['OPENAI_API_KEY'] = 'test-secret'
+  requests = []
+  app.ext.data['aichat']['runner'] = lambda do |_arguments, body, &completion|
+    requests << JSON.parse(body)
+    completion.call(aichat_success_response('first answer'), '', 0)
+  end
+
+  app.aichat_ask
+  app.use_edit_buffer('second source')
+  app.frame.queue_echo_input('Follow up')
+  app.ext.data['aichat']['runner'] = lambda do |_arguments, body, &_completion|
+    requests << JSON.parse(body)
+  end
+  app.aichat_ask
+
+  second_input = requests[1]['input']
+  assert_equal 'First instruction', second_input[0]['content']
+  assert_equal 'first answer', second_input[1]['content']
+  assert_equal 'user', second_input[2]['role']
+  assert_true second_input[2]['content'].include?('Follow up')
+  assert_true second_input[2]['content'].include?('second source')
+  second_input.each do |message|
+    assert_false message['content'].to_s.include?('first private source')
+  end
+  app.ext.data['aichat']['conversation'].each do |message|
+    assert_false message['content'].to_s.include?('first private source')
+  end
+ensure
+  ENV['OPENAI_API_KEY'] = old_key
+end
+
+assert('aichat_clear resets conversation, pending response, display, and input start') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  app.use_aichat_buffer("You: old\nAssistant: answer\n\nYou: draft", 'You: draft')
+  app.ext.data['aichat']['conversation'] = [
+    { 'role' => 'user', 'content' => 'old' },
+    { 'role' => 'assistant', 'content' => 'answer' }
+  ]
+  app.ext.data['aichat']['pending_response'] = { 'text' => 'pending' }
+
+  app.aichat_clear
+
+  assert_equal [], app.ext.data['aichat']['conversation']
+  assert_nil app.ext.data['aichat']['pending_response']
+  assert_equal 'You: ', app.frame.view_win.text
+  assert_equal 5, app.frame.view_win.position
+  assert_equal 5, app.ext.data['aichat']['input_start']
+end
+
+assert('aichat_clear is rejected while a request is running') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  app.use_aichat_buffer('You: question', 'You: question')
+  conversation = [{ 'role' => 'user', 'content' => 'old' }]
+  pending = { 'text' => 'pending' }
+  app.ext.data['aichat']['conversation'] = conversation
+  app.ext.data['aichat']['pending_response'] = pending
+  app.ext.data['aichat']['request_running'] = true
+
+  app.aichat_clear
+
+  assert_equal ['AI Chat request is already running'], app.messages
+  assert_equal conversation, app.ext.data['aichat']['conversation']
+  assert_equal pending, app.ext.data['aichat']['pending_response']
+  assert_equal 'You: question', app.frame.view_win.text
+end
+
+assert('the first request after aichat_clear excludes old conversation') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  app.use_aichat_buffer('You: old', 'You: old')
+  app.ext.data['aichat']['conversation'] = [
+    { 'role' => 'user', 'content' => 'old' },
+    { 'role' => 'assistant', 'content' => 'old answer' }
+  ]
+  app.aichat_clear
+  app.frame.view_win.sci_insert_text(app.frame.view_win.sci_get_length, 'new')
+  app.frame.view_win.sci_goto_pos(app.frame.view_win.sci_get_length)
+  old_key = ENV['OPENAI_API_KEY']
+  ENV['OPENAI_API_KEY'] = 'test-secret'
+  request = nil
+  app.ext.data['aichat']['runner'] = lambda do |_arguments, body, &_completion|
+    request = JSON.parse(body)
+  end
+
+  app.aichat_send
+
+  assert_equal [{ 'role' => 'user', 'content' => 'new' }], request['input']
 ensure
   ENV['OPENAI_API_KEY'] = old_key
 end

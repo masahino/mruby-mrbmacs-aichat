@@ -16,6 +16,10 @@ module Mrbmacs
         @text = @text[0...position].to_s + value + @text[position..-1].to_s
       end
 
+      def sci_set_text(value)
+        @text = value
+      end
+
       def sci_get_length
         @text.bytesize
       end

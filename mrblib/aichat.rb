@@ -6,6 +6,7 @@ module Mrbmacs
     WAITING_TEXT = "\nAssistant: Waiting for response...".freeze
     CONNECT_TIMEOUT_SECONDS = 10
     REQUEST_TIMEOUT_SECONDS = 300
+    CONVERSATION_TURN_LIMIT = 10
 
     def self.register_aichat(appl)
       Mrbmacs::ModeManager.add_mode(AICHAT_BUFFER_NAME, 'aichat')
@@ -16,6 +17,7 @@ module Mrbmacs
         'input_start' => nil,
         'request_running' => false,
         'pending_response' => nil,
+        'conversation' => [],
         'runner' => lambda do |arguments, request_body, &completion|
           start_curl(appl, arguments, request_body, &completion)
         end
