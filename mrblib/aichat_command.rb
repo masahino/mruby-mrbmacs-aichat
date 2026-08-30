@@ -237,14 +237,17 @@ module Mrbmacs
     end
 
     def request_aichat_step(input, previous_response_id, tools, tool_call_count, api_key,
-                            &completion)
+                            request_instructions = nil, &completion)
       request = {
         'model' => @ext.data['aichat']['model'],
         'input' => input
       }
-      unless tools.empty?
+      if tools.empty?
+        request['instructions'] = request_instructions unless request_instructions.nil?
+      else
         request['tools'] = tools
         request['parallel_tool_calls'] = false
+        request['instructions'] = request_instructions || AichatExtension::AGENT_INSTRUCTIONS
       end
       request['previous_response_id'] = previous_response_id unless previous_response_id.nil?
 
@@ -274,7 +277,13 @@ module Mrbmacs
           next
         end
         if tool_call_count >= AichatExtension::MAX_AGENT_TOOL_CALLS
-          completion.call(nil, 'AI Chat tool call limit reached.')
+          finalize_aichat_tool_limit(
+            response,
+            tool_calls[0],
+            tool_call_count,
+            api_key,
+            &completion
+          )
           next
         end
 
@@ -370,7 +379,22 @@ module Mrbmacs
       @logger.debug(
         "[aichat] tool call #{call_number}/#{AichatExtension::MAX_AGENT_TOOL_CALLS}: #{tool_name}"
       )
-      result = agent_call_tool(tool_name, arguments)
+      begin
+        result = agent_call_tool(tool_name, arguments)
+      rescue StandardError => e
+        continue_aichat_tool_error(
+          response_id,
+          call_id,
+          tool_name,
+          arguments,
+          e,
+          tools,
+          tool_call_count,
+          api_key,
+          &completion
+        )
+        return
+      end
       result_summary = result.is_a?(Array) ? "matches=#{result.length}" : 'completed'
       @logger.debug "[aichat] tool result: #{tool_name} #{result_summary}"
       tool_output = {
@@ -390,6 +414,82 @@ module Mrbmacs
       completion.call(nil, 'OpenAI tool call arguments contained invalid JSON.')
     rescue StandardError => e
       completion.call(nil, redact_aichat_secret(e.to_s, api_key))
+    end
+
+    def continue_aichat_tool_error(response_id, call_id, tool_name, arguments, error, tools,
+                                   tool_call_count, api_key, &completion)
+      message = redact_aichat_secret(error.to_s, api_key)
+      @logger.debug "[aichat] tool error: #{tool_name}: #{message}"
+      tool_output = {
+        'type' => 'function_call_output',
+        'call_id' => call_id,
+        'output' => JSON.generate(
+          {
+            'error' => 'tool_execution_failed',
+            'tool' => tool_name,
+            'arguments' => arguments,
+            'message' => message,
+            'suggestion' => 'Correct the arguments or use another tool based on this error.'
+          }
+        )
+      }
+      request_aichat_step(
+        [tool_output],
+        response_id,
+        tools,
+        tool_call_count + 1,
+        api_key,
+        &completion
+      )
+    end
+
+    def finalize_aichat_tool_limit(response, tool_call, tool_call_count, api_key, &completion)
+      response_id = response['id']
+      call_id = tool_call['call_id']
+      if response_id.nil? || response_id.empty? || call_id.nil? || call_id.empty?
+        completion.call(nil, 'OpenAI tool call did not contain required IDs.')
+        return
+      end
+
+      tool_name = tool_call['name'].to_s
+      @logger.debug(
+        "[aichat] tool call limit reached; not executed: #{tool_name}"
+      )
+      tool_output = {
+        'type' => 'function_call_output',
+        'call_id' => call_id,
+        'output' => JSON.generate(
+          {
+            'error' => 'tool_call_limit_reached',
+            'message' => "The tool was not executed because the limit of #{tool_call_count} " \
+                         'successful tool calls was reached.',
+            'requested_tool' => tool_name
+          }
+        )
+      }
+      request_aichat_step(
+        [tool_output],
+        response_id,
+        [],
+        tool_call_count,
+        api_key,
+        aichat_tool_limit_instructions,
+        &completion
+      )
+    rescue StandardError => e
+      completion.call(nil, redact_aichat_secret(e.to_s, api_key))
+    end
+
+    def aichat_tool_limit_instructions
+      [
+        'The tool call limit has been reached. Do not request additional tools.',
+        'Provide a best-effort answer using only facts already established by successful tool results.',
+        'Clearly distinguish:',
+        '- facts confirmed by tool results;',
+        '- facts that remain unverified;',
+        '- the additional fact or narrower follow-up question needed to continue.',
+        'Do not invent missing information. Do not respond only with a tool-limit error.'
+      ].join("\n")
     end
 
     def extract_aichat_output_text(response)

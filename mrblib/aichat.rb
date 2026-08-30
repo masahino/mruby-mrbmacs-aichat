@@ -13,7 +13,16 @@ module Mrbmacs
     CONNECT_TIMEOUT_SECONDS = 10
     REQUEST_TIMEOUT_SECONDS = 300
     CONVERSATION_TURN_LIMIT = 10
-    MAX_AGENT_TOOL_CALLS = 5
+    MAX_AGENT_TOOL_CALLS = 10
+    AGENT_INSTRUCTIONS = [
+      "Use the minimum number of tool calls needed to answer the user's request.",
+      'Before each tool call, determine what fact is still missing.',
+      'Prefer the tool that directly provides that fact.',
+      'Do not use another tool merely to confirm information already established by a ' \
+      'successful tool result.',
+      'Use additional tools only when they provide information necessary for the requested answer.',
+      'Stop using tools as soon as the requested facts are established.'
+    ].join("\n").freeze
 
     def self.register_aichat(appl)
       Mrbmacs::ModeManager.add_mode(AICHAT_BUFFER_NAME, 'aichat')

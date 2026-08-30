@@ -408,6 +408,8 @@ assert('aichat executes search_project and sends its result before displaying th
   assert_equal [{ 'query' => 'target_word' }], tool_calls.map { |call| call[1] }
   assert_equal 'search_project', tool_calls[0][0]
   assert_equal false, requests[0]['parallel_tool_calls']
+  assert_equal Mrbmacs::AichatExtension::AGENT_INSTRUCTIONS,
+               requests[0]['instructions']
   assert_equal [{
     'type' => 'function',
     'name' => 'search_project',
@@ -421,6 +423,8 @@ assert('aichat executes search_project and sends its result before displaying th
     'strict' => true
   }], requests[0]['tools']
   assert_equal 'resp_1', requests[1]['previous_response_id']
+  assert_equal Mrbmacs::AichatExtension::AGENT_INSTRUCTIONS,
+               requests[1]['instructions']
   assert_equal 'function_call_output', requests[1]['input'][0]['type']
   assert_equal 'call_1', requests[1]['input'][0]['call_id']
   assert_equal [
@@ -536,7 +540,7 @@ ensure
   ENV['OPENAI_API_KEY'] = old_key
 end
 
-assert('aichat reports agent tool errors') do
+assert('aichat returns agent tool errors to the model for recovery') do
   app = Mrbmacs::AichatTestSupport::App.new
   app.use_aichat_buffer('You: question', 'You: question')
   app.define_singleton_method(:agent_tools) do
@@ -547,23 +551,35 @@ assert('aichat reports agent tool errors') do
   end
   old_key = ENV['OPENAI_API_KEY']
   ENV['OPENAI_API_KEY'] = 'test-secret'
-  app.ext.data['aichat']['runner'] = lambda do |_arguments, _body, &completion|
-    completion.call(
-      aichat_tool_call_response('resp_1', 'call_1', 'search_project', '{"query":"foo"}'),
-      '', 0
-    )
+  requests = []
+  app.ext.data['aichat']['runner'] = lambda do |_arguments, body, &completion|
+    requests << JSON.parse(body)
+    if requests.length == 1
+      completion.call(
+        aichat_tool_call_response('resp_1', 'call_1', 'search_project', '{"query":"foo"}'),
+        '', 0
+      )
+    else
+      completion.call(aichat_success_response('The project is unavailable.'), '', 0)
+    end
   end
 
   app.aichat_send
 
-  assert_true app.frame.view_win.text.include?('Project is not available')
-  assert_equal [], app.ext.data['aichat']['conversation']
+  tool_error = JSON.parse(requests[1]['input'][0]['output'])
+  assert_equal 'resp_1', requests[1]['previous_response_id']
+  assert_equal 'call_1', requests[1]['input'][0]['call_id']
+  assert_equal 'tool_execution_failed', tool_error['error']
+  assert_equal 'search_project', tool_error['tool']
+  assert_equal({ 'query' => 'foo' }, tool_error['arguments'])
+  assert_equal 'Project is not available', tool_error['message']
+  assert_true app.frame.view_win.text.include?('The project is unavailable.')
   assert_false app.ext.data['aichat']['request_running']
 ensure
   ENV['OPENAI_API_KEY'] = old_key
 end
 
-assert('aichat passes an unknown tool name to the agent interface and reports its error') do
+assert('aichat returns an unknown tool error to the model') do
   app = Mrbmacs::AichatTestSupport::App.new
   app.use_aichat_buffer('You: question', 'You: question')
   app.define_singleton_method(:agent_tools) do
@@ -576,17 +592,27 @@ assert('aichat passes an unknown tool name to the agent interface and reports it
   end
   old_key = ENV['OPENAI_API_KEY']
   ENV['OPENAI_API_KEY'] = 'test-secret'
-  app.ext.data['aichat']['runner'] = lambda do |_arguments, _body, &completion|
-    completion.call(
-      aichat_tool_call_response('resp_1', 'call_1', 'unknown', '{}'),
-      '', 0
-    )
+  requests = []
+  app.ext.data['aichat']['runner'] = lambda do |_arguments, body, &completion|
+    requests << JSON.parse(body)
+    if requests.length == 1
+      completion.call(
+        aichat_tool_call_response('resp_1', 'call_1', 'unknown', '{}'),
+        '', 0
+      )
+    else
+      completion.call(aichat_success_response('That tool is unavailable.'), '', 0)
+    end
   end
 
   app.aichat_send
 
+  tool_error = JSON.parse(requests[1]['input'][0]['output'])
   assert_equal 'unknown', received_name
-  assert_true app.frame.view_win.text.include?('Unknown agent tool: unknown')
+  assert_equal 'tool_execution_failed', tool_error['error']
+  assert_equal 'unknown', tool_error['tool']
+  assert_equal 'Unknown agent tool: unknown', tool_error['message']
+  assert_true app.frame.view_win.text.include?('That tool is unavailable.')
   assert_false app.ext.data['aichat']['request_running']
 ensure
   ENV['OPENAI_API_KEY'] = old_key
@@ -660,7 +686,7 @@ ensure
   ENV['OPENAI_API_KEY'] = old_key
 end
 
-assert('aichat stops before executing a sixth agent tool call') do
+assert('aichat finalizes without tools after reaching the agent tool call limit') do
   app = Mrbmacs::AichatTestSupport::App.new
   app.use_aichat_buffer('You: question', 'You: question')
   app.define_singleton_method(:agent_tools) do
@@ -673,26 +699,43 @@ assert('aichat stops before executing a sixth agent tool call') do
   end
   old_key = ENV['OPENAI_API_KEY']
   ENV['OPENAI_API_KEY'] = 'test-secret'
-  responses = 0
-  app.ext.data['aichat']['runner'] = lambda do |_arguments, _body, &completion|
-    responses += 1
-    completion.call(
-      aichat_tool_call_response(
-        "resp_#{responses}",
-        "call_#{responses}",
-        'search_project',
-        '{"query":"foo"}'
-      ),
-      '',
-      0
-    )
+  limit = Mrbmacs::AichatExtension::MAX_AGENT_TOOL_CALLS
+  requests = []
+  tool_responses = 0
+  app.ext.data['aichat']['runner'] = lambda do |_arguments, body, &completion|
+    request = JSON.parse(body)
+    requests << request
+    if request.key?('tools')
+      tool_responses += 1
+      completion.call(
+        aichat_tool_call_response(
+          "resp_#{tool_responses}",
+          "call_#{tool_responses}",
+          'search_project',
+          '{"query":"foo"}'
+        ),
+        '',
+        0
+      )
+    else
+      completion.call(aichat_success_response('Confirmed facts; unverified facts remain.'), '', 0)
+    end
   end
 
   app.aichat_send
 
-  assert_equal 5, executed
-  assert_equal 6, responses
-  assert_true app.frame.view_win.text.include?('AI Chat tool call limit reached.')
+  final_request = requests[-1]
+  limit_output = JSON.parse(final_request['input'][0]['output'])
+  assert_equal limit, executed
+  assert_equal limit + 2, requests.length
+  assert_false final_request.key?('tools')
+  assert_false final_request.key?('parallel_tool_calls')
+  assert_true final_request['instructions'].include?('facts confirmed by tool results')
+  assert_equal "resp_#{limit + 1}", final_request['previous_response_id']
+  assert_equal "call_#{limit + 1}", final_request['input'][0]['call_id']
+  assert_equal 'tool_call_limit_reached', limit_output['error']
+  assert_equal 'search_project', limit_output['requested_tool']
+  assert_true app.frame.view_win.text.include?('Confirmed facts; unverified facts remain.')
   assert_false app.ext.data['aichat']['request_running']
 ensure
   ENV['OPENAI_API_KEY'] = old_key
