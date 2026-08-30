@@ -1,15 +1,53 @@
 module Mrbmacs
   module Command
     def aichat
+      ensure_aichat_model
       buffer_name = AichatExtension::AICHAT_BUFFER_NAME
       existing_buffer = Mrbmacs.get_buffer_from_name(@buffer_list, buffer_name)
       setup_result_buffer(buffer_name)
+      update_aichat_modeline
       unless existing_buffer.nil?
         apply_pending_aichat_response
         return
       end
 
       reset_aichat_buffer
+    end
+
+    def aichat_model
+      state = @ext.data['aichat']
+      if state['request_running']
+        message 'AI Chat request is already running'
+        return
+      end
+
+      ensure_aichat_model
+      api_key = ENV['OPENAI_API_KEY']
+      if api_key.nil? || api_key.empty?
+        select_aichat_model(state['models'])
+        return
+      end
+
+      state['request_running'] = true
+      state['runner'].call(aichat_models_curl_arguments, '') do |response_body,
+                                                               error_text,
+                                                               status|
+        models, error = parse_aichat_models(response_body, error_text, status, api_key)
+        state['request_running'] = false
+        if error.nil?
+          state['models'] = models
+        else
+          message "Could not refresh AI models: #{error}"
+        end
+        select_aichat_model(state['models'])
+      rescue StandardError => e
+        state['request_running'] = false
+        message "Could not refresh AI models: #{redact_aichat_secret(e.to_s, api_key)}"
+        select_aichat_model(state['models'])
+      end
+    rescue StandardError => e
+      state['request_running'] = false unless state.nil?
+      message "Could not refresh AI models: #{redact_aichat_secret(e.to_s, api_key)}"
     end
 
     def aichat_send
@@ -77,11 +115,91 @@ module Mrbmacs
 
       state['conversation'] = []
       state['pending_response'] = nil
+      ensure_aichat_model
       setup_result_buffer(AichatExtension::AICHAT_BUFFER_NAME)
+      update_aichat_modeline
       reset_aichat_buffer
     end
 
     private
+
+    def select_aichat_model(models)
+      state = @ext.data['aichat']
+      current_model = state['model']
+      selected_model = @frame.echo_gets('AI model: ', current_model) do |input_text|
+        matching_models = models.select do |model|
+          model.start_with?(input_text)
+        end
+        separator = @frame.echo_win.sci_autoc_get_separator.chr
+        [matching_models.join(separator), input_text.length]
+      end
+      return if selected_model.nil? || selected_model.empty? || selected_model == current_model
+
+      unless models.include?(selected_model)
+        message "Unknown AI model: #{selected_model}"
+        return
+      end
+
+      state['model'] = selected_model
+      update_aichat_modeline
+    end
+
+    def ensure_aichat_model
+      state = @ext.data['aichat']
+      return state['model'] unless state['model'].nil? || state['model'].empty?
+
+      model = ENV['MRBMACS_AICHAT_MODEL']
+      model = AichatExtension::DEFAULT_MODEL if model.nil? || model.empty?
+      state['model'] = model
+    end
+
+    def update_aichat_modeline
+      buffer = Mrbmacs.get_buffer_from_name(
+        @buffer_list,
+        AichatExtension::AICHAT_BUFFER_NAME
+      )
+      return if buffer.nil?
+
+      buffer.additional_info = @ext.data['aichat']['model']
+      @frame.modeline(self) if @current_buffer.equal?(buffer)
+    end
+
+    def aichat_models_curl_arguments
+      [
+        '--disable',
+        '--silent',
+        '--show-error',
+        '--fail-with-body',
+        '--connect-timeout', AichatExtension::CONNECT_TIMEOUT_SECONDS.to_s,
+        '--max-time', AichatExtension::REQUEST_TIMEOUT_SECONDS.to_s,
+        '--request', 'GET',
+        '--url', AichatExtension::MODELS_URL,
+        '--variable', '%OPENAI_API_KEY',
+        '--expand-header', 'Authorization: Bearer {{OPENAI_API_KEY}}'
+      ]
+    end
+
+    def parse_aichat_models(response_body, error_text, status, api_key)
+      response, error = parse_aichat_response(response_body, error_text, status, api_key)
+      return [nil, error] unless error.nil?
+
+      data = response['data']
+      return [nil, 'OpenAI model response did not contain data.'] unless data.is_a?(Array)
+
+      models = []
+      data.each do |item|
+        next unless item.is_a?(Hash)
+
+        model = item['id']
+        next unless model.is_a?(String) && !model.empty?
+        next unless model =~ /\Agpt-5(?:$|[.-])/
+
+        models << model unless models.include?(model)
+      end
+      return [nil, 'OpenAI model response did not contain model IDs.'] if models.empty?
+
+      [models.sort, nil]
+    end
 
     def start_aichat_request(api_prompt, conversation_prompt, waiting_start = nil,
                              waiting_end = nil, preserve_input = false)
@@ -105,16 +223,78 @@ module Mrbmacs
     end
 
     def request_aichat(prompt, &completion)
+      ensure_aichat_model
       api_key = ENV['OPENAI_API_KEY']
       if api_key.nil? || api_key.empty?
         completion.call(nil, 'OPENAI_API_KEY is not set.')
         return
       end
 
-      model = ENV['MRBMACS_AICHAT_MODEL']
-      model = AichatExtension::DEFAULT_MODEL if model.nil? || model.empty?
-      request_body = JSON.generate('model' => model, 'input' => build_aichat_input(prompt))
-      arguments = [
+      tools = build_aichat_tools
+      request_aichat_step(build_aichat_input(prompt), nil, tools, 0, api_key, &completion)
+    rescue StandardError => e
+      completion.call(nil, redact_aichat_secret(e.to_s, api_key))
+    end
+
+    def request_aichat_step(input, previous_response_id, tools, tool_call_count, api_key,
+                            &completion)
+      request = {
+        'model' => @ext.data['aichat']['model'],
+        'input' => input
+      }
+      unless tools.empty?
+        request['tools'] = tools
+        request['parallel_tool_calls'] = false
+      end
+      request['previous_response_id'] = previous_response_id unless previous_response_id.nil?
+
+      arguments = aichat_curl_arguments
+      @ext.data['aichat']['runner'].call(arguments, JSON.generate(request)) do |response_body,
+                                                                               error_text,
+                                                                               status|
+        response, error = parse_aichat_response(response_body, error_text, status, api_key)
+        unless error.nil?
+          completion.call(nil, error)
+          next
+        end
+
+        tool_calls = extract_aichat_tool_calls(response)
+        if tool_calls.empty?
+          output = extract_aichat_output_text(response)
+          if output.empty?
+            completion.call(nil, 'OpenAI response did not contain output text.')
+          else
+            completion.call(output, nil)
+          end
+          next
+        end
+
+        if tool_calls.length > 1
+          completion.call(nil, 'OpenAI returned multiple tool calls; parallel tool calls are unsupported.')
+          next
+        end
+        if tool_call_count >= AichatExtension::MAX_AGENT_TOOL_CALLS
+          completion.call(nil, 'AI Chat tool call limit reached.')
+          next
+        end
+
+        continue_aichat_tool_call(
+          response,
+          tool_calls[0],
+          tools,
+          tool_call_count,
+          api_key,
+          &completion
+        )
+      rescue StandardError => e
+        completion.call(nil, redact_aichat_secret(e.to_s, api_key))
+      end
+    rescue StandardError => e
+      completion.call(nil, redact_aichat_secret(e.to_s, api_key))
+    end
+
+    def aichat_curl_arguments
+      [
         '--disable',
         '--silent',
         '--show-error',
@@ -128,16 +308,23 @@ module Mrbmacs
         '--header', 'Content-Type: application/json',
         '--data-binary', '@-'
       ]
-
-      @ext.data['aichat']['runner'].call(arguments, request_body) do |response_body, error_text, status|
-        answer, error = process_aichat_result(response_body, error_text, status, api_key)
-        completion.call(answer, error)
-      end
-    rescue StandardError => e
-      completion.call(nil, redact_aichat_secret(e.to_s, api_key))
     end
 
-    def process_aichat_result(response_body, error_text, status, api_key)
+    def build_aichat_tools
+      return [] unless respond_to?(:agent_tools) && respond_to?(:agent_call_tool)
+
+      agent_tools.map do |tool|
+        {
+          'type' => 'function',
+          'name' => tool['name'],
+          'description' => tool['description'],
+          'parameters' => tool['input_schema'],
+          'strict' => true
+        }
+      end
+    end
+
+    def parse_aichat_response(response_body, error_text, status, api_key)
       log_aichat_failure(status, error_text, api_key) unless status == 0
       response = JSON.parse(response_body)
       if response['error'].is_a?(Hash)
@@ -145,15 +332,64 @@ module Mrbmacs
       end
       return [nil, "curl exited with status #{status}"] unless status == 0
 
-      output = extract_aichat_output_text(response)
-      return [nil, 'OpenAI response did not contain output text.'] if output.empty?
-
-      [output, nil]
+      [response, nil]
     rescue JSON::ParserError
       log_aichat_parse_failure
       [nil, status == 0 ? 'OpenAI returned invalid JSON.' : "curl exited with status #{status}"]
     rescue StandardError => e
       [nil, redact_aichat_secret(e.to_s, api_key)]
+    end
+
+    def extract_aichat_tool_calls(response)
+      output = response['output']
+      return [] unless output.is_a?(Array)
+
+      output.select { |item| item.is_a?(Hash) && item['type'] == 'function_call' }
+    end
+
+    def continue_aichat_tool_call(response, tool_call, tools, tool_call_count, api_key,
+                                  &completion)
+      response_id = response['id']
+      call_id = tool_call['call_id']
+      if response_id.nil? || response_id.empty? || call_id.nil? || call_id.empty?
+        completion.call(nil, 'OpenAI tool call did not contain required IDs.')
+        return
+      end
+      unless respond_to?(:agent_tools) && respond_to?(:agent_call_tool)
+        completion.call(nil, 'AI agent tools are not available.')
+        return
+      end
+
+      arguments = JSON.parse(tool_call['arguments'].to_s)
+      unless arguments.is_a?(Hash)
+        completion.call(nil, 'OpenAI tool call arguments must be a JSON object.')
+        return
+      end
+      tool_name = tool_call['name'].to_s
+      call_number = tool_call_count + 1
+      @logger.debug(
+        "[aichat] tool call #{call_number}/#{AichatExtension::MAX_AGENT_TOOL_CALLS}: #{tool_name}"
+      )
+      result = agent_call_tool(tool_name, arguments)
+      result_summary = result.is_a?(Array) ? "matches=#{result.length}" : 'completed'
+      @logger.debug "[aichat] tool result: #{tool_name} #{result_summary}"
+      tool_output = {
+        'type' => 'function_call_output',
+        'call_id' => call_id,
+        'output' => JSON.generate(result)
+      }
+      request_aichat_step(
+        [tool_output],
+        response_id,
+        tools,
+        tool_call_count + 1,
+        api_key,
+        &completion
+      )
+    rescue JSON::ParserError
+      completion.call(nil, 'OpenAI tool call arguments contained invalid JSON.')
+    rescue StandardError => e
+      completion.call(nil, redact_aichat_secret(e.to_s, api_key))
     end
 
     def extract_aichat_output_text(response)

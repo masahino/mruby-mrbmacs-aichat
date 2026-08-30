@@ -9,6 +9,24 @@ def aichat_success_response(text)
   )
 end
 
+def aichat_tool_call_response(response_id, call_id, name, arguments)
+  JSON.generate(
+    'id' => response_id,
+    'output' => [
+      {
+        'type' => 'function_call',
+        'call_id' => call_id,
+        'name' => name,
+        'arguments' => arguments
+      }
+    ]
+  )
+end
+
+def aichat_models_response(*models)
+  JSON.generate('data' => models.map { |model| { 'id' => model } })
+end
+
 assert('AichatExtension registers its runner') do
   app = Mrbmacs::AichatTestSupport::App.new
 
@@ -50,6 +68,10 @@ assert('aichat_clear is available as an extended command') do
   assert_true Mrbmacs::Command.instance_methods.include?(:aichat_clear)
 end
 
+assert('aichat_model is available as an extended command') do
+  assert_true Mrbmacs::Command.instance_methods.include?(:aichat_model)
+end
+
 assert('AichatExtension registers *AI Chat* mode') do
   Mrbmacs::AichatTestSupport::App.new
 
@@ -74,6 +96,8 @@ end
 
 assert('aichat creates and initializes *AI Chat*') do
   app = Mrbmacs::AichatTestSupport::App.new
+  old_model = ENV['MRBMACS_AICHAT_MODEL']
+  ENV['MRBMACS_AICHAT_MODEL'] = nil
 
   app.aichat
 
@@ -82,6 +106,157 @@ assert('aichat creates and initializes *AI Chat*') do
   assert_equal 'You: ', app.frame.view_win.text
   assert_equal 5, app.frame.view_win.position
   assert_equal 5, app.ext.data['aichat']['input_start']
+  assert_equal Mrbmacs::AichatExtension::DEFAULT_MODEL, app.ext.data['aichat']['model']
+  assert_equal Mrbmacs::AichatExtension::DEFAULT_MODEL, app.current_buffer.additional_info
+  assert_equal [Mrbmacs::AichatExtension::DEFAULT_MODEL], app.frame.modeline_values
+ensure
+  ENV['MRBMACS_AICHAT_MODEL'] = old_model
+end
+
+assert('aichat initializes its model from the environment only once') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  old_model = ENV['MRBMACS_AICHAT_MODEL']
+  ENV['MRBMACS_AICHAT_MODEL'] = 'environment-model'
+
+  app.aichat
+  assert_equal 'environment-model', app.ext.data['aichat']['model']
+
+  ENV['MRBMACS_AICHAT_MODEL'] = 'changed-environment-model'
+  app.aichat
+  assert_equal 'environment-model', app.ext.data['aichat']['model']
+  assert_equal 'environment-model', app.current_buffer.additional_info
+ensure
+  ENV['MRBMACS_AICHAT_MODEL'] = old_model
+end
+
+assert('aichat_model completes and selects a fixed model') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  old_model = ENV['MRBMACS_AICHAT_MODEL']
+  old_key = ENV['OPENAI_API_KEY']
+  ENV['MRBMACS_AICHAT_MODEL'] = nil
+  ENV['OPENAI_API_KEY'] = nil
+  app.aichat
+  app.ext.data['aichat']['conversation'] = [
+    { 'role' => 'user', 'content' => 'old question' },
+    { 'role' => 'assistant', 'content' => 'old answer' }
+  ]
+  conversation = app.ext.data['aichat']['conversation']
+  app.frame.queue_echo_input('gpt-5.6-terra')
+
+  app.aichat_model
+
+  assert_equal ['AI model: '], app.frame.echo_prompts
+  assert_equal [Mrbmacs::AichatExtension::DEFAULT_MODEL], app.frame.echo_defaults
+  assert_equal 'gpt-5.6-terra', app.ext.data['aichat']['model']
+  assert_equal 'gpt-5.6-terra', app.current_buffer.additional_info
+  assert_equal conversation, app.ext.data['aichat']['conversation']
+  assert_equal ['gpt-5.6-terra', 'gpt-5.6-terra'.length],
+               app.frame.completion_results.last
+  assert_equal 'gpt-5.6-terra', app.frame.modeline_values.last
+ensure
+  ENV['MRBMACS_AICHAT_MODEL'] = old_model
+  ENV['OPENAI_API_KEY'] = old_key
+end
+
+assert('aichat_model exposes all matching fixed models to completion') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  old_key = ENV['OPENAI_API_KEY']
+  ENV['OPENAI_API_KEY'] = nil
+  app.frame.queue_echo_input('gpt-5.6-')
+
+  app.aichat_model
+
+  assert_equal [Mrbmacs::AichatExtension::AICHAT_MODELS.join(' '), 'gpt-5.6-'.length],
+               app.frame.completion_results.last
+  assert_equal ["Unknown AI model: gpt-5.6-"], app.messages
+ensure
+  ENV['OPENAI_API_KEY'] = old_key
+end
+
+assert('aichat_model replaces fixed choices with models returned by the API') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  old_key = ENV['OPENAI_API_KEY']
+  ENV['OPENAI_API_KEY'] = 'secret'
+  arguments = nil
+  body = nil
+  app.ext.data['aichat']['runner'] = lambda do |curl_arguments, request_body, &completion|
+    arguments = curl_arguments
+    body = request_body
+    completion.call(
+      aichat_models_response(
+        'gpt-5-z',
+        'gpt-5.1',
+        'chatgpt-image-latest',
+        'gpt-image-1',
+        'gpt-4o'
+      ),
+      '',
+      0
+    )
+  end
+  app.frame.queue_echo_input('gpt-5-z')
+
+  app.aichat_model
+
+  assert_true arguments.include?('GET')
+  assert_true arguments.include?(Mrbmacs::AichatExtension::MODELS_URL)
+  assert_false arguments.join(' ').include?('secret')
+  assert_equal '', body
+  assert_equal ['gpt-5-z', 'gpt-5.1'], app.ext.data['aichat']['models']
+  assert_equal 'gpt-5-z', app.ext.data['aichat']['model']
+  assert_false app.ext.data['aichat']['request_running']
+ensure
+  ENV['OPENAI_API_KEY'] = old_key
+end
+
+assert('aichat_model keeps cached choices when the models API fails') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  old_key = ENV['OPENAI_API_KEY']
+  ENV['OPENAI_API_KEY'] = 'secret'
+  app.ext.data['aichat']['runner'] = lambda do |_arguments, _body, &completion|
+    completion.call('{"error":{"message":"unavailable"}}', '', 22)
+  end
+  app.frame.queue_echo_input(Mrbmacs::AichatExtension::DEFAULT_MODEL)
+
+  app.aichat_model
+
+  assert_equal Mrbmacs::AichatExtension::AICHAT_MODELS,
+               app.ext.data['aichat']['models']
+  assert_true app.messages.include?('Could not refresh AI models: unavailable')
+  assert_false app.ext.data['aichat']['request_running']
+ensure
+  ENV['OPENAI_API_KEY'] = old_key
+end
+
+assert('aichat_model keeps the current model for cancellation, empty, and unknown input') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  old_key = ENV['OPENAI_API_KEY']
+  ENV['OPENAI_API_KEY'] = nil
+  app.aichat
+  current_model = app.ext.data['aichat']['model']
+
+  app.frame.queue_echo_input(nil)
+  app.aichat_model
+  app.frame.queue_echo_input('')
+  app.aichat_model
+  app.frame.queue_echo_input('not-a-model')
+  app.aichat_model
+
+  assert_equal current_model, app.ext.data['aichat']['model']
+  assert_equal ['Unknown AI model: not-a-model'], app.messages
+ensure
+  ENV['OPENAI_API_KEY'] = old_key
+end
+
+assert('aichat_model is rejected while a request is running') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  app.ext.data['aichat']['request_running'] = true
+
+  app.aichat_model
+
+  assert_equal ['AI Chat request is already running'], app.messages
+  assert_equal [], app.frame.echo_prompts
+  assert_nil app.ext.data['aichat']['model']
 end
 
 assert('aichat displays an existing *AI Chat* without clearing it') do
@@ -159,6 +334,8 @@ assert('aichat_send sends only the current multiline prompt and appends the answ
   assert_equal 'user', request['input'][0]['role']
   assert_equal "first line\nsecond line", request['input'][0]['content']
   assert_equal 'test-model', request['model']
+  assert_false request.key?('tools')
+  assert_false request.key?('parallel_tool_calls')
   assert_equal '--disable', request_arguments[0]
   assert_true request_arguments.include?('%OPENAI_API_KEY')
   assert_true request_arguments.include?('Authorization: Bearer {{OPENAI_API_KEY}}')
@@ -179,6 +356,346 @@ assert('aichat_send sends only the current multiline prompt and appends the answ
 ensure
   ENV['OPENAI_API_KEY'] = old_key
   ENV['MRBMACS_AICHAT_MODEL'] = old_model
+end
+
+assert('aichat executes search_project and sends its result before displaying the final answer') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  app.use_aichat_buffer('You: Find target_word', 'You: Find target_word')
+  app.define_singleton_method(:agent_tools) do
+    [{
+      'name' => 'search_project',
+      'description' => 'Search the current project for a literal string.',
+      'input_schema' => {
+        'type' => 'object',
+        'properties' => { 'query' => { 'type' => 'string' } },
+        'required' => ['query'],
+        'additionalProperties' => false
+      }
+    }]
+  end
+  tool_calls = []
+  app.define_singleton_method(:agent_call_tool) do |name, arguments|
+    tool_calls << [name, arguments]
+    [{ 'file' => '/project/file.rb', 'line' => 7, 'text' => 'target_word' }]
+  end
+  old_key = ENV['OPENAI_API_KEY']
+  ENV['OPENAI_API_KEY'] = 'test-secret'
+  requests = []
+  running_states = []
+  app.ext.data['aichat']['runner'] = lambda do |_arguments, body, &completion|
+    requests << JSON.parse(body)
+    running_states << app.ext.data['aichat']['request_running']
+    if requests.length == 1
+      completion.call(
+        aichat_tool_call_response(
+          'resp_1',
+          'call_1',
+          'search_project',
+          JSON.generate('query' => 'target_word')
+        ),
+        '',
+        0
+      )
+    else
+      completion.call(aichat_success_response('Found it.'), '', 0)
+    end
+  end
+
+  app.aichat_send
+
+  assert_equal 2, requests.length
+  assert_equal [true, true], running_states
+  assert_equal [{ 'query' => 'target_word' }], tool_calls.map { |call| call[1] }
+  assert_equal 'search_project', tool_calls[0][0]
+  assert_equal false, requests[0]['parallel_tool_calls']
+  assert_equal [{
+    'type' => 'function',
+    'name' => 'search_project',
+    'description' => 'Search the current project for a literal string.',
+    'parameters' => {
+      'type' => 'object',
+      'properties' => { 'query' => { 'type' => 'string' } },
+      'required' => ['query'],
+      'additionalProperties' => false
+    },
+    'strict' => true
+  }], requests[0]['tools']
+  assert_equal 'resp_1', requests[1]['previous_response_id']
+  assert_equal 'function_call_output', requests[1]['input'][0]['type']
+  assert_equal 'call_1', requests[1]['input'][0]['call_id']
+  assert_equal [
+    { 'file' => '/project/file.rb', 'line' => 7, 'text' => 'target_word' }
+  ], JSON.parse(requests[1]['input'][0]['output'])
+  assert_true app.frame.view_win.text.include?('Assistant: Found it.')
+  assert_equal [
+    { 'role' => 'user', 'content' => 'Find target_word' },
+    { 'role' => 'assistant', 'content' => 'Found it.' }
+  ], app.ext.data['aichat']['conversation']
+  assert_equal [
+    '[aichat] tool call 1/5: search_project',
+    '[aichat] tool result: search_project matches=1'
+  ], app.logger.debug_messages
+  assert_false app.logger.debug_messages.join.include?('target_word')
+  assert_false app.logger.debug_messages.join.include?('/project/file.rb')
+  assert_false app.ext.data['aichat']['conversation'].to_s.include?('/project/file.rb')
+  assert_false app.ext.data['aichat']['request_running']
+ensure
+  ENV['OPENAI_API_KEY'] = old_key
+end
+
+assert('aichat reports a tool call when agent integration is unavailable') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  app.use_aichat_buffer('You: question', 'You: question')
+  old_key = ENV['OPENAI_API_KEY']
+  ENV['OPENAI_API_KEY'] = 'test-secret'
+  app.ext.data['aichat']['runner'] = lambda do |_arguments, _body, &completion|
+    completion.call(
+      aichat_tool_call_response('resp_1', 'call_1', 'search_project', '{"query":"foo"}'),
+      '', 0
+    )
+  end
+
+  app.aichat_send
+
+  assert_true app.frame.view_win.text.include?('AI agent tools are not available.')
+  assert_equal [], app.ext.data['aichat']['conversation']
+  assert_false app.ext.data['aichat']['request_running']
+ensure
+  ENV['OPENAI_API_KEY'] = old_key
+end
+
+assert('aichat supports sequential search_project calls') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  app.use_aichat_buffer('You: Compare foo and bar', 'You: Compare foo and bar')
+  app.define_singleton_method(:agent_tools) do
+    [{ 'name' => 'search_project', 'description' => 'Search', 'input_schema' => {} }]
+  end
+  queries = []
+  app.define_singleton_method(:agent_call_tool) do |_name, arguments|
+    queries << arguments['query']
+    []
+  end
+  old_key = ENV['OPENAI_API_KEY']
+  ENV['OPENAI_API_KEY'] = 'test-secret'
+  requests = []
+  app.ext.data['aichat']['runner'] = lambda do |_arguments, body, &completion|
+    requests << JSON.parse(body)
+    case requests.length
+    when 1
+      completion.call(
+        aichat_tool_call_response('resp_1', 'call_1', 'search_project', '{"query":"foo"}'),
+        '', 0
+      )
+    when 2
+      completion.call(
+        aichat_tool_call_response('resp_2', 'call_2', 'search_project', '{"query":"bar"}'),
+        '', 0
+      )
+    else
+      completion.call(aichat_success_response('Compared.'), '', 0)
+    end
+  end
+
+  app.aichat_send
+
+  assert_equal ['foo', 'bar'], queries
+  assert_equal 3, requests.length
+  assert_equal 'resp_1', requests[1]['previous_response_id']
+  assert_equal 'resp_2', requests[2]['previous_response_id']
+  assert_true app.frame.view_win.text.include?('Assistant: Compared.')
+ensure
+  ENV['OPENAI_API_KEY'] = old_key
+end
+
+assert('aichat reports invalid tool arguments without running the tool') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  app.use_aichat_buffer('You: question', 'You: question')
+  app.define_singleton_method(:agent_tools) do
+    [{ 'name' => 'search_project', 'description' => 'Search', 'input_schema' => {} }]
+  end
+  called = false
+  app.define_singleton_method(:agent_call_tool) do |_name, _arguments|
+    called = true
+  end
+  old_key = ENV['OPENAI_API_KEY']
+  ENV['OPENAI_API_KEY'] = 'test-secret'
+  app.ext.data['aichat']['runner'] = lambda do |_arguments, _body, &completion|
+    completion.call(
+      aichat_tool_call_response('resp_1', 'call_1', 'search_project', 'not json'),
+      '', 0
+    )
+  end
+
+  app.aichat_send
+
+  assert_false called
+  assert_true app.frame.view_win.text.include?('OpenAI tool call arguments contained invalid JSON.')
+  assert_equal [], app.ext.data['aichat']['conversation']
+  assert_false app.ext.data['aichat']['request_running']
+ensure
+  ENV['OPENAI_API_KEY'] = old_key
+end
+
+assert('aichat reports agent tool errors') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  app.use_aichat_buffer('You: question', 'You: question')
+  app.define_singleton_method(:agent_tools) do
+    [{ 'name' => 'search_project', 'description' => 'Search', 'input_schema' => {} }]
+  end
+  app.define_singleton_method(:agent_call_tool) do |_name, _arguments|
+    raise ArgumentError, 'Project is not available'
+  end
+  old_key = ENV['OPENAI_API_KEY']
+  ENV['OPENAI_API_KEY'] = 'test-secret'
+  app.ext.data['aichat']['runner'] = lambda do |_arguments, _body, &completion|
+    completion.call(
+      aichat_tool_call_response('resp_1', 'call_1', 'search_project', '{"query":"foo"}'),
+      '', 0
+    )
+  end
+
+  app.aichat_send
+
+  assert_true app.frame.view_win.text.include?('Project is not available')
+  assert_equal [], app.ext.data['aichat']['conversation']
+  assert_false app.ext.data['aichat']['request_running']
+ensure
+  ENV['OPENAI_API_KEY'] = old_key
+end
+
+assert('aichat passes an unknown tool name to the agent interface and reports its error') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  app.use_aichat_buffer('You: question', 'You: question')
+  app.define_singleton_method(:agent_tools) do
+    [{ 'name' => 'search_project', 'description' => 'Search', 'input_schema' => {} }]
+  end
+  received_name = nil
+  app.define_singleton_method(:agent_call_tool) do |name, _arguments|
+    received_name = name
+    raise ArgumentError, "Unknown agent tool: #{name}"
+  end
+  old_key = ENV['OPENAI_API_KEY']
+  ENV['OPENAI_API_KEY'] = 'test-secret'
+  app.ext.data['aichat']['runner'] = lambda do |_arguments, _body, &completion|
+    completion.call(
+      aichat_tool_call_response('resp_1', 'call_1', 'unknown', '{}'),
+      '', 0
+    )
+  end
+
+  app.aichat_send
+
+  assert_equal 'unknown', received_name
+  assert_true app.frame.view_win.text.include?('Unknown agent tool: unknown')
+  assert_false app.ext.data['aichat']['request_running']
+ensure
+  ENV['OPENAI_API_KEY'] = old_key
+end
+
+assert('aichat keeps an agent final response pending after switching windows') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  app.use_aichat_buffer('You: question', 'You: question')
+  app.define_singleton_method(:agent_tools) do
+    [{ 'name' => 'search_project', 'description' => 'Search', 'input_schema' => {} }]
+  end
+  app.define_singleton_method(:agent_call_tool) do |_name, _arguments|
+    []
+  end
+  old_key = ENV['OPENAI_API_KEY']
+  ENV['OPENAI_API_KEY'] = 'test-secret'
+  completions = []
+  app.ext.data['aichat']['runner'] = lambda do |_arguments, _body, &completion|
+    completions << completion
+  end
+
+  app.aichat_send
+  completions[0].call(
+    aichat_tool_call_response('resp_1', 'call_1', 'search_project', '{"query":"foo"}'),
+    '', 0
+  )
+  app.frame.edit_win = Object.new
+  completions[1].call(aichat_success_response('final answer'), '', 0)
+
+  assert_false app.frame.view_win.text.include?('final answer')
+  assert_equal 'final answer', app.ext.data['aichat']['pending_response']['text']
+  assert_false app.ext.data['aichat']['request_running']
+
+  app.aichat
+
+  assert_true app.frame.view_win.text.include?('Assistant: final answer')
+ensure
+  ENV['OPENAI_API_KEY'] = old_key
+end
+
+assert('aichat reports an HTTP error while sending a tool result') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  app.use_aichat_buffer('You: question', 'You: question')
+  app.define_singleton_method(:agent_tools) do
+    [{ 'name' => 'search_project', 'description' => 'Search', 'input_schema' => {} }]
+  end
+  app.define_singleton_method(:agent_call_tool) do |_name, _arguments|
+    []
+  end
+  old_key = ENV['OPENAI_API_KEY']
+  ENV['OPENAI_API_KEY'] = 'test-secret'
+  requests = 0
+  app.ext.data['aichat']['runner'] = lambda do |_arguments, _body, &completion|
+    requests += 1
+    if requests == 1
+      completion.call(
+        aichat_tool_call_response('resp_1', 'call_1', 'search_project', '{"query":"foo"}'),
+        '', 0
+      )
+    else
+      completion.call('', 'curl failed', 7)
+    end
+  end
+
+  app.aichat_send
+
+  assert_equal 2, requests
+  assert_true app.frame.view_win.text.include?('curl exited with status 7')
+  assert_false app.ext.data['aichat']['request_running']
+ensure
+  ENV['OPENAI_API_KEY'] = old_key
+end
+
+assert('aichat stops before executing a sixth agent tool call') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  app.use_aichat_buffer('You: question', 'You: question')
+  app.define_singleton_method(:agent_tools) do
+    [{ 'name' => 'search_project', 'description' => 'Search', 'input_schema' => {} }]
+  end
+  executed = 0
+  app.define_singleton_method(:agent_call_tool) do |_name, _arguments|
+    executed += 1
+    []
+  end
+  old_key = ENV['OPENAI_API_KEY']
+  ENV['OPENAI_API_KEY'] = 'test-secret'
+  responses = 0
+  app.ext.data['aichat']['runner'] = lambda do |_arguments, _body, &completion|
+    responses += 1
+    completion.call(
+      aichat_tool_call_response(
+        "resp_#{responses}",
+        "call_#{responses}",
+        'search_project',
+        '{"query":"foo"}'
+      ),
+      '',
+      0
+    )
+  end
+
+  app.aichat_send
+
+  assert_equal 5, executed
+  assert_equal 6, responses
+  assert_true app.frame.view_win.text.include?('AI Chat tool call limit reached.')
+  assert_false app.ext.data['aichat']['request_running']
+ensure
+  ENV['OPENAI_API_KEY'] = old_key
 end
 
 assert('aichat_send does not run curl without an API key') do
@@ -448,6 +965,33 @@ ensure
   ENV['OPENAI_API_KEY'] = old_key
 end
 
+assert('aichat requests use a newly selected model and retain conversation') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  app.use_aichat_buffer('You: follow up', 'You: follow up')
+  app.ext.data['aichat']['conversation'] = [
+    { 'role' => 'user', 'content' => 'first question' },
+    { 'role' => 'assistant', 'content' => 'first answer' }
+  ]
+  app.ext.data['aichat']['model'] = 'gpt-5.6-luna'
+  app.frame.queue_echo_input('gpt-5.6-sol')
+  app.aichat_model
+  old_key = ENV['OPENAI_API_KEY']
+  ENV['OPENAI_API_KEY'] = 'test-secret'
+  request = nil
+  app.ext.data['aichat']['runner'] = lambda do |_arguments, body, &_completion|
+    request = JSON.parse(body)
+  end
+
+  app.aichat_send
+
+  assert_equal 'gpt-5.6-sol', request['model']
+  assert_equal 'first question', request['input'][0]['content']
+  assert_equal 'first answer', request['input'][1]['content']
+  assert_equal 'follow up', request['input'][2]['content']
+ensure
+  ENV['OPENAI_API_KEY'] = old_key
+end
+
 assert('aichat keeps at most ten complete conversation turns') do
   app = Mrbmacs::AichatTestSupport::App.new
   conversation = app.ext.data['aichat']['conversation']
@@ -520,6 +1064,7 @@ assert('aichat_clear resets conversation, pending response, display, and input s
     { 'role' => 'assistant', 'content' => 'answer' }
   ]
   app.ext.data['aichat']['pending_response'] = { 'text' => 'pending' }
+  app.ext.data['aichat']['model'] = 'gpt-5.6-sol'
 
   app.aichat_clear
 
@@ -528,6 +1073,7 @@ assert('aichat_clear resets conversation, pending response, display, and input s
   assert_equal 'You: ', app.frame.view_win.text
   assert_equal 5, app.frame.view_win.position
   assert_equal 5, app.ext.data['aichat']['input_start']
+  assert_equal 'gpt-5.6-sol', app.ext.data['aichat']['model']
 end
 
 assert('aichat_clear is rejected while a request is running') do

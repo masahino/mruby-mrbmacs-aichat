@@ -85,7 +85,8 @@ module Mrbmacs
     end
 
     class Frame
-      attr_reader :view_win, :echo_prompts
+      attr_reader :view_win, :echo_prompts, :echo_defaults, :completion_results,
+                  :modeline_values
       attr_accessor :edit_win
 
       def initialize
@@ -93,15 +94,33 @@ module Mrbmacs
         @edit_win = Object.new
         @echo_inputs = []
         @echo_prompts = []
+        @echo_defaults = []
+        @completion_results = []
+        @modeline_values = []
       end
 
       def queue_echo_input(input)
         @echo_inputs << input
       end
 
-      def echo_gets(prompt, _text = '')
+      def echo_gets(prompt, text = '', &block)
         @echo_prompts << prompt
-        @echo_inputs.shift
+        @echo_defaults << text
+        input = @echo_inputs.shift
+        @completion_results << block.call(input) unless block.nil? || input.nil?
+        input
+      end
+
+      def echo_win
+        self
+      end
+
+      def sci_autoc_get_separator
+        32
+      end
+
+      def modeline(app)
+        @modeline_values << app.current_buffer.additional_info
       end
     end
 
@@ -186,14 +205,19 @@ module Mrbmacs
     end
 
     class Logger
-      attr_reader :messages
+      attr_reader :messages, :debug_messages
 
       def initialize
         @messages = []
+        @debug_messages = []
       end
 
       def info(message)
         @messages << message
+      end
+
+      def debug(message)
+        @debug_messages << message
       end
     end
   end

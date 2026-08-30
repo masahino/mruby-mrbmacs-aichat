@@ -1,12 +1,19 @@
 module Mrbmacs
   class AichatExtension < Extension
     AICHAT_BUFFER_NAME = '*AI Chat*'.freeze
-    DEFAULT_MODEL = 'gpt-5.4-mini'.freeze
+    DEFAULT_MODEL = 'gpt-5.6-luna'.freeze
+    AICHAT_MODELS = [
+      'gpt-5.6-luna',
+      'gpt-5.6-terra',
+      'gpt-5.6-sol'
+    ].freeze
+    MODELS_URL = 'https://api.openai.com/v1/models'.freeze
     RESPONSES_URL = 'https://api.openai.com/v1/responses'.freeze
     WAITING_TEXT = "\nAssistant: Waiting for response...".freeze
     CONNECT_TIMEOUT_SECONDS = 10
     REQUEST_TIMEOUT_SECONDS = 300
     CONVERSATION_TURN_LIMIT = 10
+    MAX_AGENT_TOOL_CALLS = 5
 
     def self.register_aichat(appl)
       Mrbmacs::ModeManager.add_mode(AICHAT_BUFFER_NAME, 'aichat')
@@ -18,6 +25,8 @@ module Mrbmacs
         'request_running' => false,
         'pending_response' => nil,
         'conversation' => [],
+        'model' => nil,
+        'models' => AICHAT_MODELS.dup,
         'runner' => lambda do |arguments, request_body, &completion|
           start_curl(appl, arguments, request_body, &completion)
         end

@@ -7,12 +7,21 @@ The `*AI Chat*` buffer uses Markdown syntax highlighting.
 This extension requires curl 8.3.0 or later. The API key is expanded from the
 environment by curl and is not placed in curl's command-line arguments.
 
-Set credentials and an optional model in `~/.mrbmacs`:
+Set credentials and an optional initial model in `~/.mrbmacs`:
 
 ```ruby
 ENV['OPENAI_API_KEY'] = '...'
-ENV['MRBMACS_AICHAT_MODEL'] = 'gpt-5.4-mini'
+ENV['MRBMACS_AICHAT_MODEL'] = 'gpt-5.6-luna'
 ```
+
+When `MRBMACS_AICHAT_MODEL` is not set, `gpt-5.6-luna` is used. Run
+`M-x aichat-model` to change the model for the current session. The available
+choices are retrieved from OpenAI's Models API when the command runs. The
+browsable choices are limited to GPT-5 model IDs. The
+built-in choices `gpt-5.6-luna`, `gpt-5.6-terra`, and `gpt-5.6-sol` are used as
+a fallback when the model list cannot be retrieved. Changing the model
+preserves the current conversation. The active model is shown in the `*AI Chat*`
+mode line.
 
 Run `M-x aichat`, enter a question after `You: `, then run
 `M-x aichat-send` or press `C-c C-c`.
@@ -48,3 +57,14 @@ topic or when earlier content should no longer be sent to the API.
 
 - `C-c C-a`: Ask AI about the current region or buffer.
 - `C-c C-c`: Send the prompt from `*AI Chat*`.
+
+## Optional agent tools
+
+When `mruby-mrbmacs-agent` is included in the mrbmacs build, AI Chat exposes
+its read-only `search_project` tool to the Responses API. The model may use the
+tool to search the current Project while answering an existing `aichat-send`
+or `aichat-ask` request. No additional command or agent mode is required.
+
+Project search results, including matching file paths, line numbers, and line
+text, are sent to the OpenAI API when the model calls the tool. AI Chat works
+as before when `mruby-mrbmacs-agent` is not included.
