@@ -124,11 +124,20 @@ module Mrbmacs
       end
     end
 
+    class Project
+      attr_reader :root_directory
+
+      def initialize(root_directory)
+        @root_directory = root_directory
+      end
+    end
+
     class App
       include Mrbmacs::Command
 
       attr_reader :ext, :frame, :buffer_list, :current_buffer, :messages,
                   :setup_result_buffer_calls, :logger, :global_keybindings
+      attr_accessor :project
 
       def initialize
         @ext = Mrbmacs::Extension.new
@@ -140,7 +149,20 @@ module Mrbmacs
         @setup_result_buffer_calls = []
         @global_keybindings = { 'C-c C-c' => 'compile' }
         @buffer_texts = { @current_buffer => '' }
+        @command_handlers = {}
         Mrbmacs::AichatExtension.register_aichat(self)
+      end
+
+      def add_command_event(name, &handler)
+        @command_handlers[name] ||= []
+        @command_handlers[name] << handler
+      end
+
+      def run_command_event(name, *arguments)
+        handlers = @command_handlers[name] || []
+        handlers.each do |handler|
+          handler.call(*arguments)
+        end
       end
 
       def effective_keybindings
@@ -194,6 +216,17 @@ module Mrbmacs
         @frame.view_win.selection_start = selection_start
         @frame.view_win.selection_end = selection_end
         @buffer_texts[@current_buffer] = text
+      end
+
+      def add_edit_buffer(filename, text = '')
+        @buffer_texts[@current_buffer] = @frame.view_win.text
+        buffer = Mrbmacs::Buffer.new(filename)
+        @buffer_list << buffer
+        @current_buffer = buffer
+        @frame.view_win.text = text
+        @frame.view_win.position = text.bytesize
+        @buffer_texts[buffer] = text
+        buffer
       end
 
       def buffer_text(buffer_name)

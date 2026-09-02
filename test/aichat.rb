@@ -107,8 +107,9 @@ assert('aichat creates and initializes *AI Chat*') do
   assert_equal 5, app.frame.view_win.position
   assert_equal 5, app.ext.data['aichat']['input_start']
   assert_equal Mrbmacs::AichatExtension::DEFAULT_MODEL, app.ext.data['aichat']['model']
-  assert_equal Mrbmacs::AichatExtension::DEFAULT_MODEL, app.current_buffer.additional_info
-  assert_equal [Mrbmacs::AichatExtension::DEFAULT_MODEL], app.frame.modeline_values
+  info = "#{Mrbmacs::AichatExtension::DEFAULT_MODEL} | Target: *scratch*"
+  assert_equal info, app.current_buffer.additional_info
+  assert_equal [info], app.frame.modeline_values
 ensure
   ENV['MRBMACS_AICHAT_MODEL'] = old_model
 end
@@ -124,7 +125,7 @@ assert('aichat initializes its model from the environment only once') do
   ENV['MRBMACS_AICHAT_MODEL'] = 'changed-environment-model'
   app.aichat
   assert_equal 'environment-model', app.ext.data['aichat']['model']
-  assert_equal 'environment-model', app.current_buffer.additional_info
+  assert_equal 'environment-model | Target: *scratch*', app.current_buffer.additional_info
 ensure
   ENV['MRBMACS_AICHAT_MODEL'] = old_model
 end
@@ -148,11 +149,11 @@ assert('aichat_model completes and selects a fixed model') do
   assert_equal ['AI model: '], app.frame.echo_prompts
   assert_equal [Mrbmacs::AichatExtension::DEFAULT_MODEL], app.frame.echo_defaults
   assert_equal 'gpt-5.6-terra', app.ext.data['aichat']['model']
-  assert_equal 'gpt-5.6-terra', app.current_buffer.additional_info
+  assert_equal 'gpt-5.6-terra | Target: *scratch*', app.current_buffer.additional_info
   assert_equal conversation, app.ext.data['aichat']['conversation']
   assert_equal ['gpt-5.6-terra', 'gpt-5.6-terra'.length],
                app.frame.completion_results.last
-  assert_equal 'gpt-5.6-terra', app.frame.modeline_values.last
+  assert_equal 'gpt-5.6-terra | Target: *scratch*', app.frame.modeline_values.last
 ensure
   ENV['MRBMACS_AICHAT_MODEL'] = old_model
   ENV['OPENAI_API_KEY'] = old_key
@@ -267,6 +268,37 @@ assert('aichat displays an existing *AI Chat* without clearing it') do
   app.aichat
 
   assert_equal original_text, app.frame.view_win.text
+end
+
+assert('aichat updates its target from normal buffers and preserves it in AI Chat') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  app.project = Mrbmacs::AichatTestSupport::Project.new('/project')
+  first = app.add_edit_buffer('/project/mrblib/first.rb')
+
+  app.aichat
+
+  assert_same first, app.ext.data['aichat']['target_buffer']
+  assert_true app.current_buffer.additional_info.end_with?('Target: mrblib/first.rb')
+
+  app.aichat
+  assert_same first, app.ext.data['aichat']['target_buffer']
+
+  second = app.add_edit_buffer('/project/mrblib/second.rb')
+  app.aichat
+  assert_same second, app.ext.data['aichat']['target_buffer']
+  assert_true app.current_buffer.additional_info.end_with?('Target: mrblib/second.rb')
+end
+
+assert('aichat clears a killed target buffer') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  target = app.add_edit_buffer('/project/target.rb')
+  app.aichat
+  app.buffer_list.delete(target)
+
+  app.run_command_event(:after_kill_buffer, app, target)
+
+  assert_nil app.ext.data['aichat']['target_buffer']
+  assert_true app.current_buffer.additional_info.end_with?('Target: none')
 end
 
 assert('aichat_send only runs in *AI Chat*') do
@@ -894,6 +926,7 @@ assert('aichat_ask sends the selected region and displays only the instruction')
 
   app.aichat_ask
 
+  assert_same source_buffer, app.ext.data['aichat']['target_buffer']
   assert_equal ['AI about region: '], app.frame.echo_prompts
   request = JSON.parse(request_body)
   assert_equal 1, request['input'].length
@@ -941,6 +974,50 @@ assert('aichat_ask sends the whole buffer when there is no region') do
   assert_false app.frame.view_win.text.include?('first')
 ensure
   ENV['OPENAI_API_KEY'] = old_key
+end
+
+assert('aichat_ask rejects an oversized whole-buffer context before input') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  limit = Mrbmacs::AichatExtension::MAX_EDITOR_CONTEXT_BYTES
+  app.use_edit_buffer('x' * (limit + 1))
+  app.frame.queue_echo_input('Review')
+  called = false
+  app.ext.data['aichat']['runner'] = lambda do |_arguments, _body, &_completion|
+    called = true
+  end
+
+  app.aichat_ask
+
+  assert_false called
+  assert_equal [], app.frame.echo_prompts
+  assert_equal [
+    "AI context is too large (#{limit + 1} bytes; limit #{limit}). " \
+    'Select a smaller region and retry.'
+  ], app.messages
+  assert_false app.ext.data['aichat']['request_running']
+end
+
+assert('aichat_ask rejects an oversized region context before input') do
+  app = Mrbmacs::AichatTestSupport::App.new
+  limit = Mrbmacs::AichatExtension::MAX_EDITOR_CONTEXT_BYTES
+  source = "before#{'x' * (limit + 1)}after"
+  app.use_edit_buffer(source, 6, 6 + limit + 1)
+  app.frame.queue_echo_input('Review')
+  called = false
+  app.ext.data['aichat']['runner'] = lambda do |_arguments, _body, &_completion|
+    called = true
+  end
+
+  app.aichat_ask
+
+  assert_false called
+  assert_equal [], app.frame.echo_prompts
+  assert_equal [
+    "AI context is too large (#{limit + 1} bytes; limit #{limit}). " \
+    'Select a smaller region and retry.'
+  ], app.messages
+  assert_equal source, app.frame.view_win.text
+  assert_false app.ext.data['aichat']['request_running']
 end
 
 assert('aichat_ask preserves an existing unsent draft') do
@@ -1101,6 +1178,7 @@ end
 
 assert('aichat_clear resets conversation, pending response, display, and input start') do
   app = Mrbmacs::AichatTestSupport::App.new
+  target = app.current_buffer
   app.use_aichat_buffer("You: old\nAssistant: answer\n\nYou: draft", 'You: draft')
   app.ext.data['aichat']['conversation'] = [
     { 'role' => 'user', 'content' => 'old' },
@@ -1108,6 +1186,7 @@ assert('aichat_clear resets conversation, pending response, display, and input s
   ]
   app.ext.data['aichat']['pending_response'] = { 'text' => 'pending' }
   app.ext.data['aichat']['model'] = 'gpt-5.6-sol'
+  app.ext.data['aichat']['target_buffer'] = target
 
   app.aichat_clear
 
@@ -1117,6 +1196,7 @@ assert('aichat_clear resets conversation, pending response, display, and input s
   assert_equal 5, app.frame.view_win.position
   assert_equal 5, app.ext.data['aichat']['input_start']
   assert_equal 'gpt-5.6-sol', app.ext.data['aichat']['model']
+  assert_same target, app.ext.data['aichat']['target_buffer']
 end
 
 assert('aichat_clear is rejected while a request is running') do

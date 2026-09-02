@@ -1,6 +1,7 @@
 module Mrbmacs
   module Command
     def aichat
+      set_aichat_target_buffer(@current_buffer) unless aichat_buffer?(@current_buffer)
       ensure_aichat_model
       buffer_name = AichatExtension::AICHAT_BUFFER_NAME
       existing_buffer = Mrbmacs.get_buffer_from_name(@buffer_list, buffer_name)
@@ -78,6 +79,7 @@ module Mrbmacs
         return
       end
 
+      set_aichat_target_buffer(@current_buffer)
       source_view = @frame.view_win
       selection_start = source_view.sci_get_selection_start
       selection_end = source_view.sci_get_selection_end
@@ -87,6 +89,12 @@ module Mrbmacs
                else
                  source_view.sci_get_text(source_view.sci_get_length + 1)
                end
+      if source.bytesize > AichatExtension::MAX_EDITOR_CONTEXT_BYTES
+        message "AI context is too large (#{source.bytesize} bytes; limit " \
+                "#{AichatExtension::MAX_EDITOR_CONTEXT_BYTES}). " \
+                'Select a smaller region and retry.'
+        return
+      end
       source = source.dup
 
       prompt = region_selected ? 'AI about region: ' : 'AI about whole buffer: '
@@ -122,6 +130,38 @@ module Mrbmacs
     end
 
     private
+
+    def aichat_buffer?(buffer)
+      !buffer.nil? && buffer.name == AichatExtension::AICHAT_BUFFER_NAME
+    end
+
+    def set_aichat_target_buffer(buffer)
+      @ext.data['aichat']['target_buffer'] = buffer
+    end
+
+    def aichat_target_buffer
+      state = @ext.data['aichat']
+      target = state['target_buffer']
+      return nil if target.nil?
+      return target if @buffer_list.include?(target)
+
+      state['target_buffer'] = nil
+      nil
+    end
+
+    def aichat_target_name
+      target = aichat_target_buffer
+      return 'none' if target.nil?
+      return target.name if target.filename.nil? || target.filename.empty?
+
+      filename = File.expand_path(target.filename)
+      unless @project.nil?
+        root = File.expand_path(@project.root_directory)
+        prefix = root.end_with?('/') ? root : "#{root}/"
+        return filename[prefix.bytesize..-1] if filename.start_with?(prefix)
+      end
+      filename
+    end
 
     def select_aichat_model(models)
       state = @ext.data['aichat']
@@ -160,7 +200,8 @@ module Mrbmacs
       )
       return if buffer.nil?
 
-      buffer.additional_info = @ext.data['aichat']['model']
+      state = @ext.data['aichat']
+      buffer.additional_info = "#{state['model']} | Target: #{aichat_target_name}"
       @frame.modeline(self) if @current_buffer.equal?(buffer)
     end
 

@@ -13,7 +13,8 @@ module Mrbmacs
     CONNECT_TIMEOUT_SECONDS = 10
     REQUEST_TIMEOUT_SECONDS = 300
     CONVERSATION_TURN_LIMIT = 10
-    MAX_AGENT_TOOL_CALLS = 10
+    MAX_EDITOR_CONTEXT_BYTES = 64 * 1024
+    MAX_AGENT_TOOL_CALLS = 5
     AGENT_INSTRUCTIONS = [
       "Use the minimum number of tool calls needed to answer the user's request.",
       'Before each tool call, determine what fact is still missing.',
@@ -34,12 +35,20 @@ module Mrbmacs
         'request_running' => false,
         'pending_response' => nil,
         'conversation' => [],
+        'target_buffer' => nil,
         'model' => nil,
         'models' => AICHAT_MODELS.dup,
         'runner' => lambda do |arguments, request_body, &completion|
           start_curl(appl, arguments, request_body, &completion)
         end
       }
+      appl.add_command_event(:after_kill_buffer) do |app, buffer|
+        state = app.ext.data['aichat']
+        next unless state['target_buffer'].equal?(buffer)
+
+        state['target_buffer'] = nil
+        app.send(:update_aichat_modeline)
+      end
     end
 
     def self.start_curl(appl, arguments, request_body, &completion)
