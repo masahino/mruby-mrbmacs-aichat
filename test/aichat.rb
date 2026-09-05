@@ -27,6 +27,22 @@ def aichat_models_response(*models)
   JSON.generate('data' => models.map { |model| { 'id' => model } })
 end
 
+assert('AI Chat commands have descriptions without API metadata') do
+  descriptions = {
+    aichat: 'Open the AI Chat buffer.',
+    aichat_model: 'Select the OpenAI model used for this session.',
+    aichat_send: 'Send the current prompt from the AI Chat buffer.',
+    aichat_ask: 'Ask AI about the selected region or current buffer.',
+    aichat_clear: 'Clear the AI Chat conversation.'
+  }
+
+  descriptions.each do |name, description|
+    metadata = Mrbmacs::Command.metadata[name]
+    assert_equal description, metadata['description']
+    assert_nil metadata['api']
+  end
+end
+
 assert('AichatExtension registers its runner') do
   app = Mrbmacs::AichatTestSupport::App.new
 

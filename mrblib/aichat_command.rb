@@ -1,5 +1,7 @@
 module Mrbmacs
   module Command
+    describe_command :aichat, 'Open the AI Chat buffer.'
+
     def aichat
       set_aichat_target_buffer(@current_buffer) unless aichat_buffer?(@current_buffer)
       ensure_aichat_model
@@ -14,6 +16,8 @@ module Mrbmacs
 
       reset_aichat_buffer
     end
+
+    describe_command :aichat_model, 'Select the OpenAI model used for this session.'
 
     def aichat_model
       state = @ext.data['aichat']
@@ -51,6 +55,8 @@ module Mrbmacs
       message "Could not refresh AI models: #{redact_aichat_secret(e.to_s, api_key)}"
     end
 
+    describe_command :aichat_send, 'Send the current prompt from the AI Chat buffer.'
+
     def aichat_send
       unless @current_buffer.name == AichatExtension::AICHAT_BUFFER_NAME
         message 'aichat-send is only available in *AI Chat*'
@@ -72,6 +78,8 @@ module Mrbmacs
 
       start_aichat_request(prompt, prompt)
     end
+
+    describe_command :aichat_ask, 'Ask AI about the selected region or current buffer.'
 
     def aichat_ask
       if @ext.data['aichat']['request_running']
@@ -113,6 +121,8 @@ module Mrbmacs
         preserve_input
       )
     end
+
+    describe_command :aichat_clear, 'Clear the AI Chat conversation.'
 
     def aichat_clear
       state = @ext.data['aichat']
