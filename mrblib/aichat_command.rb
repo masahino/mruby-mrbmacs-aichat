@@ -291,14 +291,12 @@ module Mrbmacs
                             request_instructions = nil, &completion)
       request = {
         'model' => @ext.data['aichat']['model'],
-        'input' => input
+        'input' => input,
+        'instructions' => aichat_request_instructions(tools, request_instructions)
       }
-      if tools.empty?
-        request['instructions'] = request_instructions unless request_instructions.nil?
-      else
+      unless tools.empty?
         request['tools'] = tools
         request['parallel_tool_calls'] = false
-        request['instructions'] = request_instructions || AichatExtension::AGENT_INSTRUCTIONS
       end
       request['previous_response_id'] = previous_response_id unless previous_response_id.nil?
 
@@ -368,6 +366,13 @@ module Mrbmacs
         '--header', 'Content-Type: application/json',
         '--data-binary', '@-'
       ]
+    end
+
+    def aichat_request_instructions(tools, request_instructions)
+      instructions = [AichatExtension::BASE_INSTRUCTIONS]
+      instructions << AichatExtension::AGENT_INSTRUCTIONS unless tools.empty?
+      instructions << request_instructions unless request_instructions.nil?
+      instructions.join("\n\n")
     end
 
     def build_aichat_tools

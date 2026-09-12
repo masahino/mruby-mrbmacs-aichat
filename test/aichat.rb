@@ -382,6 +382,7 @@ assert('aichat_send sends only the current multiline prompt and appends the answ
   assert_equal 'user', request['input'][0]['role']
   assert_equal "first line\nsecond line", request['input'][0]['content']
   assert_equal 'test-model', request['model']
+  assert_equal Mrbmacs::AichatExtension::BASE_INSTRUCTIONS, request['instructions']
   assert_false request.key?('tools')
   assert_false request.key?('parallel_tool_calls')
   assert_equal '--disable', request_arguments[0]
@@ -456,7 +457,10 @@ assert('aichat executes search_project and sends its result before displaying th
   assert_equal [{ 'query' => 'target_word' }], tool_calls.map { |call| call[1] }
   assert_equal 'search_project', tool_calls[0][0]
   assert_equal false, requests[0]['parallel_tool_calls']
-  assert_equal Mrbmacs::AichatExtension::AGENT_INSTRUCTIONS,
+  assert_equal [
+    Mrbmacs::AichatExtension::BASE_INSTRUCTIONS,
+    Mrbmacs::AichatExtension::AGENT_INSTRUCTIONS
+  ].join("\n\n"),
                requests[0]['instructions']
   assert_equal [{
     'type' => 'function',
@@ -471,7 +475,10 @@ assert('aichat executes search_project and sends its result before displaying th
     'strict' => true
   }], requests[0]['tools']
   assert_equal 'resp_1', requests[1]['previous_response_id']
-  assert_equal Mrbmacs::AichatExtension::AGENT_INSTRUCTIONS,
+  assert_equal [
+    Mrbmacs::AichatExtension::BASE_INSTRUCTIONS,
+    Mrbmacs::AichatExtension::AGENT_INSTRUCTIONS
+  ].join("\n\n"),
                requests[1]['instructions']
   assert_equal 'function_call_output', requests[1]['input'][0]['type']
   assert_equal 'call_1', requests[1]['input'][0]['call_id']
@@ -778,6 +785,9 @@ assert('aichat finalizes without tools after reaching the agent tool call limit'
   assert_equal limit + 2, requests.length
   assert_false final_request.key?('tools')
   assert_false final_request.key?('parallel_tool_calls')
+  assert_true final_request['instructions'].start_with?(
+    Mrbmacs::AichatExtension::BASE_INSTRUCTIONS
+  )
   assert_true final_request['instructions'].include?('facts confirmed by tool results')
   assert_equal "resp_#{limit + 1}", final_request['previous_response_id']
   assert_equal "call_#{limit + 1}", final_request['input'][0]['call_id']

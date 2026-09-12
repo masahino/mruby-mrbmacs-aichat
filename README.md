@@ -7,7 +7,8 @@ The `*AI Chat*` buffer uses Markdown syntax highlighting.
 This extension requires curl 8.3.0 or later. The API key is expanded from the
 environment by curl and is not placed in curl's command-line arguments.
 
-Set credentials and an optional initial model in `~/.mrbmacs`:
+Set credentials and an optional initial model in
+`~/.config/mrbmacs/init.rb` (`$XDG_CONFIG_HOME/mrbmacs/init.rb` when set):
 
 ```ruby
 ENV['OPENAI_API_KEY'] = '...'

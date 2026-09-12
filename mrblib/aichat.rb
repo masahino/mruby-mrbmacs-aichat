@@ -15,6 +15,11 @@ module Mrbmacs
     CONVERSATION_TURN_LIMIT = 10
     MAX_EDITOR_CONTEXT_BYTES = 64 * 1024
     MAX_AGENT_TOOL_CALLS = 5
+    BASE_INSTRUCTIONS = [
+      'You are an AI assistant integrated into the mrbmacs editor.',
+      'When relevant, use the editor capabilities available to you.',
+      'Do not assume editor capabilities that are not available.'
+    ].join("\n").freeze
     AGENT_INSTRUCTIONS = [
       "Use the minimum number of tool calls needed to answer the user's request.",
       'Before each tool call, determine what fact is still missing.',
@@ -27,6 +32,9 @@ module Mrbmacs
 
     def self.register_aichat(appl)
       Mrbmacs::ModeManager.add_mode(AICHAT_BUFFER_NAME, 'aichat')
+      unless appl.effective_keybindings.key?('C-c a')
+        appl.modify_keymap('C-c a', 'aichat')
+      end
       unless appl.effective_keybindings.key?('C-c C-a')
         appl.modify_keymap('C-c C-a', 'aichat_ask')
       end
