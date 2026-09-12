@@ -62,10 +62,14 @@ topic or when earlier content should no longer be sent to the API.
 ## Optional agent tools
 
 When `mruby-mrbmacs-agent` is included in the mrbmacs build, AI Chat exposes
-its read-only `search_project` tool to the Responses API. The model may use the
-tool to search the current Project while answering an existing `aichat-send`
-or `aichat-ask` request. No additional command or agent mode is required.
+its project-scoped `search_project`, `find_files`, `find_file`, `read_file`,
+and `read_file_range` tools to the Responses API. Commands with an external API
+handler, currently including `list_commands`, are exposed through the same
+tool interface. The model may use these tools while answering an existing
+`aichat-send` or `aichat-ask` request. No additional command or agent mode is
+required.
 
-Project search results, including matching file paths, line numbers, and line
-text, are sent to the OpenAI API when the model calls the tool. AI Chat works
-as before when `mruby-mrbmacs-agent` is not included.
+Tool results needed to continue the response, including matching paths, line
+numbers, line text, and requested file contents, are sent to the OpenAI API.
+The file tools are restricted to the current Project. AI Chat works as before
+when `mruby-mrbmacs-agent` is not included.
