@@ -1191,9 +1191,10 @@ assert('aichat requests use a newly selected model and retain conversation') do
     { 'role' => 'assistant', 'content' => 'first answer' }
   ]
   app.ext.data['aichat']['model'] = 'gpt-5.6-luna'
+  old_key = ENV['OPENAI_API_KEY']
+  ENV['OPENAI_API_KEY'] = nil
   app.frame.queue_echo_input('gpt-5.6-sol')
   app.aichat_model
-  old_key = ENV['OPENAI_API_KEY']
   ENV['OPENAI_API_KEY'] = 'test-secret'
   request = nil
   app.ext.data['aichat']['runner'] = lambda do |_arguments, body, &_completion|
