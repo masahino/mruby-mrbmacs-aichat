@@ -27,6 +27,78 @@ def aichat_models_response(*models)
   JSON.generate('data' => models.map { |model| { 'id' => model } })
 end
 
+def aichat_transport_io
+  io = Object.new
+  io.instance_variable_set(:@closed, false)
+  io.define_singleton_method(:closed?) { @closed }
+  io.define_singleton_method(:close) { @closed = true }
+  io
+end
+
+def aichat_transport_request(stdout_io, stderr_io, completions)
+  {
+    'stdout' => 'response',
+    'stderr' => 'warning',
+    'stdout_closed' => false,
+    'stderr_closed' => false,
+    'stdout_io' => stdout_io,
+    'stderr_io' => stderr_io,
+    'stdout_registered' => true,
+    'stderr_registered' => true,
+    'completed' => false,
+    'completion' => lambda do |stdout, stderr, status|
+      completions << [stdout, stderr, status]
+    end
+  }
+end
+
+assert('AichatExtension quotes curl arguments for the POSIX shell') do
+  assert_equal "'plain'", Mrbmacs::AichatExtension.shell_quote('plain')
+  assert_equal "'header with spaces'", Mrbmacs::AichatExtension.shell_quote('header with spaces')
+  assert_equal %q('value'"'"'s $HOME;touch marker'),
+               Mrbmacs::AichatExtension.shell_quote("value's $HOME;touch marker")
+  assert_equal "''", Mrbmacs::AichatExtension.shell_quote('')
+end
+
+assert('AichatExtension waits for stderr EOF before closing the curl IO') do
+  app = Object.new
+  app.define_singleton_method(:del_io_read_event) { |_io| }
+  stdout_io = aichat_transport_io
+  stderr_io = aichat_transport_io
+  completions = []
+  request = aichat_transport_request(stdout_io, stderr_io, completions)
+
+  Mrbmacs::AichatExtension.close_curl_stream(app, request, 'stdout', stdout_io)
+
+  assert_false stdout_io.closed?
+  assert_equal [], completions
+
+  Mrbmacs::AichatExtension.close_curl_stream(app, request, 'stderr', stderr_io)
+
+  assert_true stdout_io.closed?
+  assert_true stderr_io.closed?
+  assert_equal 1, completions.length
+  assert_equal ['response', 'warning'], completions[0][0, 2]
+end
+
+assert('AichatExtension completes after stdout EOF when stderr closed first') do
+  app = Object.new
+  app.define_singleton_method(:del_io_read_event) { |_io| }
+  stdout_io = aichat_transport_io
+  stderr_io = aichat_transport_io
+  completions = []
+  request = aichat_transport_request(stdout_io, stderr_io, completions)
+
+  Mrbmacs::AichatExtension.close_curl_stream(app, request, 'stderr', stderr_io)
+  assert_equal [], completions
+
+  Mrbmacs::AichatExtension.close_curl_stream(app, request, 'stdout', stdout_io)
+  Mrbmacs::AichatExtension.complete_curl(request)
+
+  assert_true stdout_io.closed?
+  assert_equal 1, completions.length
+end
+
 assert('AI Chat commands have descriptions without API metadata') do
   descriptions = {
     aichat: 'Open the AI Chat buffer.',
