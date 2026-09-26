@@ -4,5 +4,5 @@ MRuby::Gem::Specification.new('mruby-mrbmacs-aichat') do |spec|
   spec.version = '0.1.0'
 
   spec.add_dependency 'mruby-mrbmacs-base', github: 'masahino/mruby-mrbmacs-base'
-  spec.add_dependency 'mruby-json', github: 'masahino/mruby-json', branch: 'fix/mruby-3.4-test'
+  spec.add_dependency 'mruby-json'
 end

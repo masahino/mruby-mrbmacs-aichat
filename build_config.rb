@@ -2,11 +2,6 @@ MRuby::Build.new do |conf|
   toolchain :clang
   conf.enable_test
   conf.gembox 'default'
-  conf.gem mgem: 'mruby-json' do |gem|
-    gem.skip_test = true
-    gem.test_rbfiles = []
-    gem.test_objs = []
-  end
   conf.gem github: 'iij/mruby-regexp-pcre' do |gem|
     gem.skip_test = true
   end
